@@ -20,7 +20,8 @@
 -- window comes and, in "full" mode, tick with every slot of the cluster.
 -- Keys: LEFT/RIGHT view, SELECT LED mode (full / Galaxy / off), CANCEL exit.
 --
--- Data: one WebSocket to your relay (server.ts), about 10 messages a second.
+-- Data: the relay (server.ts or worker/), about 10 messages a second, over Wi-Fi
+-- (a WebSocket) or through a phone over Bluetooth (the relay's /install page).
 
 local RELAY = "wss://galaxy-live-relay.theo-b59.workers.dev/live"   -- your relay; its host goes in app.json "hosts"
 local OWNER = "ghosty"
@@ -454,34 +455,96 @@ local function leds(now, left)
 end
 
 ---------------------------------------------------------------------------------
--- Connection
+-- Connections. Two ways in, whichever delivers:
+--   Wi-Fi: the relay's websocket. The badge server allows it only for an app that is
+--     in the store or in a test run ("denied" otherwise).
+--   Bluetooth: a phone runs the relay's /install page, which follows the relay and
+--     writes the same messages, packed, to this badge. Needs nothing from the store.
 
+local lastMsg = -10000
+local function dispatch(m, now)
+  lastMsg = now
+  if m.t == "f" then
+    local before = est
+    onFrame(m, now)
+    if est ~= before then tickAt = now end
+  elseif m.t == "info" then onInfo(m)
+  elseif m.t == "slot" and type(m.i) == "number" and m.i >= 0 and m.i <= 3 then onSlot(m) end
+end
+
+-- Wi-Fi
 local retry = 1000
 local function connect()
-  live = false
   ws.open(RELAY, function(event, data)
     if event == "open" then
       retry = 1000
     elseif event == "message" then
       local m = json.decode(data)
-      if type(m) ~= "table" then return end
-      local now = sys.millis()
-      if m.t == "f" then
-        local before = est
-        onFrame(m, now)
-        if est ~= before then tickAt = now end
-      elseif m.t == "info" then onInfo(m)
-      elseif m.t == "slot" and type(m.i) == "number" and m.i >= 0 and m.i <= 3 then onSlot(m) end
+      if type(m) == "table" then dispatch(m, sys.millis()) end
     else
-      live = false
-      tpsL:text(tostring(data))
-      timer.after(retry, connect)
+      -- refused by the badge server: no point hammering, the phone can feed us
+      local refused = data == "denied" or data == "not linked" or data == "host not allowed"
+      if sys.millis() - lastMsg > 3000 then tpsL:text(refused and "phone?" or tostring(data)) end
+      timer.after(refused and 60000 or retry, connect)
       retry = math.min(retry * 2, 30000)
     end
   end)
 end
 connect()
 
+-- Bluetooth: the Nordic UART service; the phone writes packed messages to RX
+local NUS = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+local RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+
+local function unpackMsg(d)
+  local k = d:sub(1, 1)
+  if k == "F" and #d == 154 then               -- frame: est, tps, 5 windows of 29 bytes
+    local _, e, ok, fail = string.unpack("<c1I4I2I2", d)
+    local cur, rows = e - e % 4, {}
+    for j = 0, 4 do
+      local ours, cells, a1, b1, a2, b2, a3, b3, a4, b4, name = string.unpack("<BI2I2I2I2I2I2I2I2I2c10", d, 10 + j * 29)
+      local c = ""
+      for n = 0, 3 do c = c .. ((cells >> (n * 4)) & 15) end
+      name = name:gsub("[%z ]+$", "")
+      rows[j + 1] = { cur + 8 - 4 * j, name, ours, c, a1 + b1 + a2 + b2 + a3 + b3 + a4 + b4, { a1, b1, a2, b2, a3, b3, a4, b4 } }
+    end
+    return { t = "f", e = e, ok = ok, fail = fail, r = rows }
+  elseif k == "S" and #d == 13 then            -- one of our slots
+    local _, s, i, ok, tx, fee = string.unpack("<c1I4BBI2I4", d)
+    return { t = "slot", s = s, i = i, st = ok == 1 and "ok" or "skip", tx = tx, fee = fee }
+  elseif k == "I" and #d >= 26 then            -- info
+    local _, stake, share, rank, comm, delinq, epoch, pct, msd, leader, done, skip, up, nNext, nLast =
+      string.unpack("<c1I4I2I2I2BI2BI2I2I2I2BBB", d)
+    if #d ~= 26 + nNext * 4 + nLast * 2 then return nil end
+    local m = { t = "info", stake = stake, share = share / 1000, rank = rank, delinq = delinq == 1, epoch = epoch,
+      pct = pct, sd = msd, leader = leader, done = done, skip = skip, up = up == 1 and "live" or "reconnecting",
+      next = {}, last = {} }
+    if comm ~= 0xFFFF then m.comm = comm / 100 end
+    local pos = 27
+    for n = 1, nNext do m.next[n] = string.unpack("<I4", d, pos) pos = pos + 4 end
+    for n = 1, nLast do
+      local v = string.unpack("<I2", d, pos) pos = pos + 2
+      m.last[n] = { v & 0x7FFF, v >> 15 }
+    end
+    return m
+  end
+  return nil
+end
+
+if ble and ble.on() then
+  local function advertise() ble.advertise({ name = "Galaxy", service = NUS, connectable = true }) end
+  local served = ble.serve({ service = NUS, chars = { { uuid = RX, write = true } } }, function(event, a, b)
+    if event == "open" then
+      ui.toast("Phone connected")
+    elseif event == "write" and type(b) == "string" then
+      local ok, m = pcall(unpackMsg, b)          -- anyone in range can write: check everything
+      if ok and m then dispatch(m, sys.millis()) end
+    elseif event == "close" then
+      advertise()
+    end
+  end)
+  if served then advertise() end
+end
 
 ---------------------------------------------------------------------------------
 -- Every tick (30 ms)
@@ -499,6 +562,7 @@ function on_tick(ms)
     slide = slide * 0.55
     if slide < 0.5 then slide = 0 ghost = nil end
   end
+  if live and now - lastMsg > 3000 then live = false end
   dotColor(live and mix(0x0A5A40, GREEN, (math.sin(now / 200) + 1) / 2) or 0xFF754A)
 
   -- countdown

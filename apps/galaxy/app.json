@@ -7,6 +7,6 @@
   "icon": "charge",
   "accent": "9945FF",
   "category": "tools",
-  "permissions": ["http", "led"],
+  "permissions": ["http", "led", "ble"],
   "hosts": ["galaxy-live-relay.theo-b59.workers.dev"]
 }

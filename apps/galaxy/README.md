@@ -54,6 +54,17 @@ Si tu modifies `main.lua` ou `app.json`, refais le zip :
 cd apps/galaxy && zip -j dist/galaxy-live.zip main.lua app.json
 ```
 
+### Depuis un téléphone, sans le site
+
+`https://galaxy-live-relay.theo-b59.workers.dev/install#k=<clé>`, à ouvrir dans Chrome sur Android, fait les deux étapes :
+
+1. **Installer en USB.** La page parle à la console série du badge (puce CH340, WebUSB) et copie `app.json` et `main.lua` avec `lua put`, puis lance l'app.
+2. **Données en Bluetooth.** Une app copiée ainsi n'est ni publiée ni en test run : le serveur du badge lui refuse le Wi-Fi (« denied »). La page suit donc le relais à sa place et écrit les mêmes messages au badge en Bluetooth, compactés (154 octets au plus). Elle doit rester ouverte, téléphone à portée.
+
+La clé `k` est le secret `PHONE_KEY` du Worker (`npx wrangler secret put PHONE_KEY`). Sans elle, `/phone` répond 403.
+
+Si l'app est publiée dans le store, le badge passe par le Wi-Fi tout seul et le téléphone n'est plus nécessaire.
+
 ### Le relais sur Cloudflare (`worker/`)
 
 - Un Durable Object tient le websocket vers le dashboard Firedancer et ceux des badges.
@@ -85,5 +96,7 @@ Il prend les mêmes réglages en variables d'environnement. `DEV_NO_TICKET=1` d�
 - **L'app** a tourné dans la prévisualisation pendant de vraies fenêtres de Galaxy (par exemple les slots 469 352 188 à 469 352 191). Toutes les captures viennent de là.
   - Au pire, une callback a coûté 32 000 instructions, pour une limite de 200 000 sur le badge.
   - Aucun message n'a dépassé 4 Ko.
+- **Le chemin Bluetooth** : 30 s de vrais messages du relais, compactés par le code de la page puis décodés par l'app, donnent le même écran que le chemin Wi-Fi.
+- **Pas testé du tout** : la page d'installation sur du vrai matériel (WebUSB vers le CH340, console série, Web Bluetooth).
 - **Pas encore testé** sur un vrai badge : ni le ticket signé par le serveur du badge, ni la fluidité sur l'écran SPI. Le carrousel est redessiné à chaque tick (30 ms) et l'histogramme un tick sur deux. Si ça rame, augmente ces intervalles dans `on_tick`.
 - Depuis Cloudflare, le RPC public Solana ne répond pas. La commission et le stake viennent alors de Stakewiz.
