@@ -236,17 +236,18 @@ $('install').onclick = async () => {
 };
 
 // Android freezes a page in the background, and the badge stops getting data. A page that
-// plays sound is left running, so play a loop nobody can hear (50 Hz, a whisper of a
-// level): Android shows it as a "Galaxy Live" media notification.
+// plays sound is left running, so play a loop nobody can hear (20 Hz, very low):
+// Android shows it as a "Galaxy Live" media notification.
 let quiet = null;
 function keepAlive(log) {
   if (quiet) return;
-  const rate = 8000, n = rate, b = new Uint8Array(44 + n * 2), d = new DataView(b.buffer);
+  const rate = 8000, n = rate * 10, b = new Uint8Array(44 + n * 2), d = new DataView(b.buffer);   // 10 s: under 5 s doesn't count
   const w = (o, t) => { for (let i = 0; i < t.length; i++) b[o + i] = t.charCodeAt(i); };
   w(0, 'RIFF'); d.setUint32(4, 36 + n * 2, true); w(8, 'WAVEfmt '); d.setUint32(16, 16, true);
   d.setUint16(20, 1, true); d.setUint16(22, 1, true); d.setUint32(24, rate, true); d.setUint32(28, rate * 2, true);
   d.setUint16(32, 2, true); d.setUint16(34, 16, true); w(36, 'data'); d.setUint32(40, n * 2, true);
-  for (let i = 0; i < n; i++) d.setInt16(44 + i * 2, Math.round(4 * Math.sin((2 * Math.PI * 50 * i) / rate)), true);
+  // 20 Hz at -50 dB: too low for a phone's speaker or an ear, but not "silence" to the browser
+  for (let i = 0; i < n; i++) d.setInt16(44 + i * 2, Math.round(100 * Math.sin((2 * Math.PI * 20 * i) / rate)), true);
   quiet = new Audio(URL.createObjectURL(new Blob([b], { type: 'audio/wav' })));
   quiet.loop = true;
   quiet.play().then(() => log("Mode arrière-plan actif : tu peux changer d'app.", 'ok'))
@@ -280,7 +281,8 @@ $('bridge').onclick = async () => {
     dev.addEventListener('gattserverdisconnected', async () => {
       rx = null;
       log('Bluetooth perdu, nouvelle tentative…', 'err');
-      for (let i = 0; i < 20 && !rx; i++) { try { await link(); } catch { await new Promise((r) => setTimeout(r, 2000)); } }
+      // for as long as it takes: the badge is findable again when its app is reopened
+      while (!rx) { try { await link(); } catch { await new Promise((r) => setTimeout(r, 2000)); } }
     });
     await link();
     keepAlive(log);
