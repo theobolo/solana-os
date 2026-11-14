@@ -1,28 +1,29 @@
--- Galaxy Live: the Solana cluster making blocks, live, with Galaxy front and centre.
--- A badge-sized take on the Firedancer dashboard. LEFT / RIGHT change view.
+-- Firedancer on the badge: a badge-sized take on the Firedancer dashboard, fed by one
+-- (gui.firedancer.io by default) through a relay. It follows the dashboard's own
+-- validator, or the one the relay is told to. LEFT / RIGHT change view.
 --
 -- LIVE
 --   Leader carousel: five leader windows, the past on the left, the future on the
---   right, the current one framed in green. Each card shows the leader and its four
+--   right, the current one framed in teal. Each card shows the leader and its four
 --   slots: the slot being made fills up as it happens, then turns blue (completed),
---   light purple (notarized) and green (rooted), or pink if skipped. The cards
---   slide left when the next leader takes over. Galaxy's cards are purple.
---   TX / SLOT: one bar per slot of the cluster, scrolling; Galaxy's in the gradient.
---   Galaxy panel: active stake, rank, an epoch ring, the countdown to its next
+--   dark teal (notarized) and teal (rooted), or pink if skipped. The cards slide left
+--   when the next leader takes over. The followed validator's cards are orange.
+--   TX / SLOT: one bar per slot of the cluster, scrolling.
+--   Validator panel: its stake, rank, an epoch ring, the countdown to its next
 --   window; while it is leader, its transactions and fees as they come.
 -- SCHEDULE
---   The leader schedule after the Firedancer dashboard's: the next leaders, the
---   current one in a teal frame, then the past ones, each with its four slots (state,
---   transactions, fees, tips, time, compute used). UP / DOWN pick a slot; a panel
---   shows it in full. UP past the newest, or BACK, follows live again.
--- GALAXY
---   Galaxy's next windows on a 10-minute timeline, a big countdown, and its last
---   16 blocks as bars (transactions each).
+--   The leader schedule after the dashboard's: the next leaders, the current one in
+--   a teal frame, then the past ones, each with its four slots (state, transactions,
+--   fees, tips, time, compute used). UP / DOWN pick a slot; a panel shows it in full.
+--   UP past the newest, or BACK, follows live again.
+-- VALIDATOR
+--   The followed validator's next windows on a 10-minute timeline, a big countdown,
+--   and its last 16 blocks as bars (transactions each).
 --
--- LEDs: while Galaxy is leader the six top LEDs fill slot by slot (purple to
--- green, red for a skip), then flash and fade. The side LEDs breathe as its next
+-- LEDs: while the validator is leader the six top LEDs fill slot by slot (orange to
+-- teal, red for a skip), then flash and fade. The side LEDs breathe as its next
 -- window comes and, in "full" mode, tick with every slot of the cluster.
--- SELECT: LED mode (full / Galaxy / off). CANCEL: exit.
+-- SELECT: LED mode (full / validator only / off). CANCEL: exit.
 --
 -- Data: the relay (server.ts or worker/), over Wi-Fi (a WebSocket) or through a
 -- phone over Bluetooth: "f" ten times a second (the slot and the TPS, 9 bytes over
@@ -45,17 +46,18 @@ local OWNER = "ghosty"
 -- Colours and helpers
 
 local BG, PANEL, PANEL_HI, BORDER = 0x000000, 0x111116, 0x1C1B26, 0x2A2935
-local PURPLE, GREEN, PINK, LPURPLE, BLUE, AQUA, LIME = 0x9945FF, 0x14F195, 0xEB54BC, 0xB6B0FF, 0x64A8F2, 0x80ECFF, 0xACFF9B
-local OURS_BG = 0x221040
-local STATE = { [2] = BLUE, [3] = LPURPLE, [4] = GREEN, [5] = PINK }
+local GREEN, PINK, BLUE, AQUA = 0x14F195, 0xEB54BC, 0x64A8F2, 0x80ECFF
+local TEAL, TEAL_DARK = 0x1FC9A9, 0x12907F     -- Firedancer's teal
+local OURS, OURS_BG, OURS_TXT, OURS_HI = 0xFF7A30, 0x2B1706, 0xFFB36B, 0xFFE08A   -- the followed validator: fire orange
+local STATE = { [2] = BLUE, [3] = TEAL_DARK, [4] = TEAL, [5] = PINK }
 local DOT = " \u{2022} "         -- the badge's fonts have this bullet, not the middle dot
 
 local function mix(a, b, t)      -- blend two 0xRRGGBB colours, t in 0..1
   local function ch(s) return ((a >> s) & 255) + (((b >> s) & 255) - ((a >> s) & 255)) * t end
   return (math.floor(ch(16)) << 16) | (math.floor(ch(8)) << 8) | math.floor(ch(0))
 end
-local GRAD = {}                  -- the Solana gradient, purple to green, in 64 steps
-for i = 0, 63 do GRAD[i] = mix(PURPLE, GREEN, i / 63) end
+local GRAD = {}                  -- fire to teal, in 64 steps
+for i = 0, 63 do GRAD[i] = mix(OURS, TEAL, i / 63) end
 local function grad(t) return GRAD[math.floor((t < 0 and 0 or t > 1 and 1 or t) * 63 + 0.5)] end
 
 local function big(n)
@@ -103,8 +105,8 @@ local est, sd = 0, 400           -- the relay's estimated slot, ms per slot
 local pbase, pat = 0, 0          -- our slot clock: slots past `est` at time `pat` (a small float)
 local live = false
 local lastMsg, lastBle = -10000, -10000
-local win = { on = false, tx = 0, fee = 0, skip = false }   -- Galaxy's window in progress
-local blocks = {}                -- Galaxy's last 16 slots: {tx, skipped}
+local win = { on = false, tx = 0, fee = 0, skip = false }   -- the validator's window in progress
+local blocks = {}                -- the validator's last 16 slots: {tx, skipped}
 local slotTx = {}                -- slot -> {ok, fail, ours, skipped}, for the chart
 local tickAt = -1000             -- when the cluster last moved to a new slot
 local tpsOk, tpsFail = 0, 0
@@ -148,14 +150,32 @@ end
 -- Header
 
 ui.bg("bg")
-ui.gradient(0, 0, ui.W, 2)
-ui.label(8, 4, "GALAXY", { size = 20 })
-local dot = R(92, 12, 6, 6, { color = "dim", radius = 3 })
-ui.label(103, 9, "@" .. OWNER, { size = 12, color = "aqua" })
-local tpsL = L(150, 3, "", { size = 20, w = 128, align = "right" })
+ui.rect(0, 0, ui.W, 2, { color = TEAL })
+ui.image(6, 5, {                 -- a flame, for Firedancer
+  "......t......",
+  ".....tt......",
+  ".....ttt.....",
+  "....tttt.....",
+  "...ttttt..t..",
+  "...tttttt.tt.",
+  "..ttttttttttt",
+  ".tttttttttttt",
+  ".ttttoottttt.",
+  "tttttooottttt",
+  "ttttoooootttt",
+  "ttttoooooottt",
+  ".tttoooooottt",
+  ".ttttoooottt.",
+  "..tttttttttt.",
+  "....tttttt...",
+}, { palette = { t = TEAL, o = OURS } })
+ui.label(24, 4, "FIREDANCER", { size = 20 })
+local dot = R(156, 12, 6, 6, { color = "dim", radius = 3 })
+ui.label(166, 9, "@" .. OWNER, { size = 12, color = "aqua" })
+local tpsL = L(216, 3, "", { size = 20, w = 62, align = "right" })
 ui.label(282, 10, "TPS", { size = 12, color = "dim" })
 local DOTC = {}                  -- the live dot's pulse, 12 steps
-for i = 0, 11 do DOTC[i] = mix(0x0A5A40, GREEN, (math.sin(i / 12 * 2 * math.pi) + 1) / 2) end
+for i = 0, 11 do DOTC[i] = mix(0x0A4A40, TEAL, (math.sin(i / 12 * 2 * math.pi) + 1) / 2) end
 
 local views = { live = {}, schedule = {}, galaxy = {} }
 local ORDER = { "live", "schedule", "galaxy" }
@@ -185,33 +205,33 @@ local chartMax, chartKey = 1000, nil
 V("live", L(6, CHART_Y + 1, "TX / SLOT", { size = 12, color = "dim" }))
 local maxL = V("live", L(240, CHART_Y + 1, "", { size = 12, color = "dim", w = 74, align = "right" }))
 
--- Galaxy panel. Its frame is four thin strips: when it pulses, the screen redraws
+-- Validator panel. Its frame is four thin strips: when it pulses, the screen redraws
 -- the strips, not the whole panel.
 local PY = 162
 local frameR = {
-  V("live", R(3, PY - 1, 314, 2, { color = PURPLE })), V("live", R(3, PY + 53, 314, 2, { color = PURPLE })),
-  V("live", R(3, PY - 1, 2, 56, { color = PURPLE })), V("live", R(315, PY - 1, 2, 56, { color = PURPLE })),
+  V("live", R(3, PY - 1, 314, 2, { color = OURS })), V("live", R(3, PY + 53, 314, 2, { color = OURS })),
+  V("live", R(3, PY - 1, 2, 56, { color = OURS })), V("live", R(315, PY - 1, 2, 56, { color = OURS })),
 }
-local frameC = PURPLE
+local frameC = OURS
 local function frameColor(c)
   if c == frameC then return end
   frameC = c
   for i = 1, 4 do frameR[i]:color(c) end
 end
 V("live", ui.rect(5, PY + 1, 310, 52, { color = "panel" }))
-V("live", ui.label(12, PY + 4, "ACTIVE STAKE", { size = 12, color = "dim" }))
-local stakeL = V("live", L(12, PY + 16, "-", { size = 20, color = "green" }))
+local nameL = V("live", L(12, PY + 4, "VALIDATOR", { size = 12, color = "dim", w = 126 }))
+local stakeL = V("live", L(12, PY + 16, "-", { size = 20, color = TEAL }))
 local subL = V("live", L(12, PY + 38, "", { size = 12, color = "dim", w = 126 }))
 local RING = 44
 local ring = V("live", C(142, PY + 5, RING, RING, { color = "panel" }))
 local pctL = V("live", L(142, PY + 20, "", { size = 12, w = RING, align = "center" }))
 local capL = V("live", L(196, PY + 4, "NEXT LEADER", { size = 12, color = "dim" }))
-local cdL = V("live", L(196, PY + 16, "", { size = 20, color = "lpurple", w = 116 }))
+local cdL = V("live", L(196, PY + 16, "", { size = 20, color = TEAL, w = 116 }))
 local cdSub = V("live", L(196, PY + 38, "", { size = 12, color = "dim", w = 116 }))
 local PULSE_L, PULSE_P = {}, {}  -- the frame's pulses, 8 steps each
 for i = 0, 7 do
   local t = (math.sin(i / 8 * 2 * math.pi) + 1) / 2
-  PULSE_L[i], PULSE_P[i] = mix(PURPLE, LIME, t), mix(PURPLE, PINK, t)
+  PULSE_L[i], PULSE_P[i] = mix(OURS, OURS_HI, t), mix(OURS, PINK, t)
 end
 
 -- the ring's pixels, worked out once: {x, y, angle 0..1 from the top, clockwise}
@@ -349,9 +369,9 @@ for f = 0, 7 do
 end
 
 ---------------------------------------------------------------------------------
--- GALAXY view
+-- VALIDATOR view
 
-V("galaxy", ui.label(8, 28, "GALAXY LEADER WINDOWS" .. DOT .. "NEXT 10 MIN", { size = 12, color = "lpurple" }))
+local gTitle = V("galaxy", L(8, 28, "LEADER WINDOWS" .. DOT .. "NEXT 10 MIN", { size = 12, color = TEAL, w = 304 }))
 local TL_Y = 44
 local tl = V("galaxy", C(0, TL_Y, 320, 40, { color = "bg" }))
 local tlKey = nil
@@ -359,11 +379,11 @@ for m = 0, 10, 2 do
   V("galaxy", ui.label(m == 10 and 290 or (10 + m * 30 - 6), TL_Y + 42, m == 0 and "now" or (m .. "m"), { size = 12, color = "dim" }))
 end
 V("galaxy", ui.label(8, 104, "NEXT WINDOW", { size = 12, color = "dim" }))
-local gCd = V("galaxy", L(8, 116, "", { size = 32, color = "lpurple", w = 180 }))
+local gCd = V("galaxy", L(8, 116, "", { size = 32, color = TEAL, w = 180 }))
 local gSlot = V("galaxy", L(190, 104, "", { size = 12, color = "dim", w = 122, align = "right" }))
 local gStats = V("galaxy", L(190, 120, "", { size = 14, w = 122, align = "right" }))
-local gStats2 = V("galaxy", L(190, 138, "", { size = 12, color = "dim", w = 122, align = "right" }))
-V("galaxy", ui.label(8, 156, "LAST 16 BLOCKS" .. DOT .. "TRANSACTIONS", { size = 12, color = "lpurple" }))
+local gStats2 = V("galaxy", L(100, 138, "", { size = 12, color = "dim", w = 212, align = "right" }))
+V("galaxy", ui.label(8, 156, "LAST 16 BLOCKS" .. DOT .. "TRANSACTIONS", { size = 12, color = TEAL }))
 local BAR_Y = 170
 local bars = V("galaxy", C(0, BAR_Y, 320, 46, { color = "bg" }))
 
@@ -430,14 +450,14 @@ local function drawCarousel(now, live_s, f)
     if changed then                            -- the frame, the name, the tx: only when they change
       card.w, card.ver, card.cur = w, w.ver, isCur
       local c = card.cv.o
-      c:rect(0, 0, CW, CH, isCur and GREEN or (ours and PURPLE or BORDER))
+      c:rect(0, 0, CW, CH, isCur and TEAL or (ours and OURS or BORDER))
       c:rect(1, 1, CW - 2, CH - 2, ours and OURS_BG or PANEL)
       if ours then for i = 0, 5 do c:rect(1 + i * 10, 1, i == 5 and 8 or 10, 2, grad(i / 5)) end end
       local bw = math.floor((CW - 8) * math.min(w.tx, 2400) / 2400)
       c:rect(4, CH - 6, CW - 8, 2, PANEL_HI)
-      if bw > 0 then c:rect(4, CH - 6, bw, 2, ours and GREEN or AQUA) end
+      if bw > 0 then c:rect(4, CH - 6, bw, 2, ours and OURS or TEAL) end
       card.name:text(w.n:sub(1, 7))
-      card.name:color(ours and "lime" or (isCur and "text" or "dim"))
+      card.name:color(ours and OURS_TXT or (isCur and "text" or "dim"))
       card.tx:text(w.tx > 0 and (big(w.tx) .. " tx") or (k > 3 and "next" or ""))
       card.tx:color(isCur and "text" or "dim")
     end
@@ -607,7 +627,7 @@ local function drawSchedule(now, live_s, p)
           local w, isNow = it.w, it.kind == "now"
           local ours = w.o == 1
           c:rect(2, y, 3, it.h, isNow and FD_NOW or FD_RAIL_PAST)
-          c:rect(8, y, 306, it.h, isNow and FD_NOW or (ours and PURPLE or FD_BORDER))
+          c:rect(8, y, 306, it.h, isNow and FD_NOW or (ours and OURS or FD_BORDER))
           c:rect(9, y + 1, 304, it.h - 2, isNow and FD_NOWBG or (ours and OURS_BG or FD_CARD))
           if ours then for i = 0, 5 do c:rect(9 + i * 51, y + 1, i == 5 and 49 or 51, 2, grad(i / 5)) end end
           if it == selIt then
@@ -636,7 +656,7 @@ local function drawSchedule(now, live_s, p)
         if moved or schedDirty or upKey[upN] ~= tenths or u.s ~= w.s then
           upKey[upN], u.s = tenths, w.s
           u.name:text(w.n ~= "" and w.n:sub(1, 20) or "...")
-          u.name:color(w.o == 1 and "lime" or FD_DIM)
+          u.name:color(w.o == 1 and OURS_TXT or FD_DIM)
           u.when:text(tostring(w.s) .. "   " .. (tenths >= 0 and string.format("%.1fs", tenths / 10) or "now"))
           u.name:pos(12, sy + 1) u.when:pos(160, sy + 1)
           u.name:show(y >= -14) u.when:show(y >= -14)
@@ -650,7 +670,7 @@ local function drawSchedule(now, live_s, p)
           if c.w ~= w or c.ver ~= w.ver or c.now ~= isNow then
             c.w, c.ver, c.now = w, w.ver, isNow
             c.name:text(w.n:sub(1, 18))
-            c.name:color(ours and "lime" or (isNow and "text" or FD_TEXT))
+            c.name:color(ours and OURS_TXT or (isNow and "text" or FD_TEXT))
             local meta = {}
             if w.k > 0 then meta[#meta + 1] = big(w.k) .. " SOL" end
             if w.c ~= "" then meta[#meta + 1] = w.c end
@@ -697,7 +717,7 @@ local function drawSchedule(now, live_s, p)
     local x = w.d[j]
     local done = x[1] >= 2 and x[1] ~= 5
     pTitle:text(grouped(w.s + selJ) .. DOT .. w.n:sub(1, 18))
-    pTitle:color(w.o == 1 and "lime" or FD_TEXT)
+    pTitle:color(w.o == 1 and OURS_TXT or FD_TEXT)
     pState:text(STATE_NAME[x[1]] or "")
     pState:color(x[1] == 5 and "pink" or FD_NOW)
     pVal[1]:text(done and grouped(x[2]) or "-")
@@ -734,7 +754,7 @@ local function schedSelect(dir, live_s)
 end
 
 ---------------------------------------------------------------------------------
--- GALAXY: drawing
+-- VALIDATOR: drawing
 
 local function nextWindows()
   return info and type(info.next) == "table" and info.next or {}
@@ -755,7 +775,7 @@ local function drawTimeline(now, p)
       for yy = 0, 23, 2 do c:rect(x, 4 + yy, 3, 2, GRAD[yy * 63 // 24]) end
     end
   end
-  c:rect(9, 0, 2, 34, (now // 250) % 2 == 0 and GREEN or LIME)
+  c:rect(9, 0, 2, 34, (now // 250) % 2 == 0 and TEAL or AQUA)
 end
 
 local function drawBars()
@@ -795,7 +815,11 @@ local function onInfo(m)
   local past = (m.done or 0) + (m.skip or 0)
   skipPct = past > 0 and (m.skip or 0) * 100 / past or 0
   gStats:text(grouped(m.done or 0) .. " / " .. grouped(m.leader or 0))
-  gStats2:text(string.format("E%d skip %.2f%%", m.epoch or 0, skipPct))
+  local ver = (type(m.ver) == "string" and m.ver ~= "") and ("v" .. m.ver .. DOT) or ""
+  gStats2:text(ver .. string.format("E%d skip %.2f%%", m.epoch or 0, skipPct))
+  local name = type(m.name) == "string" and m.name:upper() or "VALIDATOR"
+  nameL:text(name:sub(1, 17))
+  gTitle:text(name:sub(1, 16) .. DOT .. "LEADER WINDOWS, 10 MIN")
   if #blocks == 0 and type(m.last) == "table" then
     for i, b in ipairs(m.last) do
       if type(b) == "table" then blocks[i] = { b[1] or 0, b[2] == 1 } end
@@ -869,7 +893,7 @@ end
 ---------------------------------------------------------------------------------
 -- LEDs: written only when they change
 
-local MODES = { "full", "galaxy", "off" }
+local MODES = { "full", "validator", "off" }
 local mode = 1
 local level = {}
 for n = 1, 6 do level[n] = { 0, 0, 0 } end
@@ -979,15 +1003,16 @@ local function unpackMsg(d)
   elseif k == "S" and #d == 13 then            -- one of our slots
     local _, s, i, ok, tx, fee = string.unpack("<c1I4BBI2I4", d)
     return { t = "slot", s = s, i = i, st = ok == 1 and "ok" or "skip", tx = tx, fee = fee }
-  elseif k == "I" and #d >= 26 then            -- info
+  elseif k == "I" and #d >= 50 then            -- info
     local _, stake, share, rank, comm, delinq, epoch, pct, msd, leader, done, skip, up, nNext, nLast =
       string.unpack("<c1I4I2I2I2BI2BI2I2I2I2BBB", d)
-    if #d ~= 26 + nNext * 4 + nLast * 2 then return nil end
+    if #d ~= 50 + nNext * 4 + nLast * 2 then return nil end
+    local name, ver = string.unpack("<c16c8", d, 27)
     local m = { t = "info", stake = stake, share = share / 1000, rank = rank, delinq = delinq == 1, epoch = epoch,
       pct = pct, sd = msd, leader = leader, done = done, skip = skip, up = up == 1 and "live" or "reconnecting",
-      next = {}, last = {} }
+      next = {}, last = {}, name = (name:gsub("[%z ]+$", "")), ver = (ver:gsub("[%z ]+$", "")) }
     if comm ~= 0xFFFF then m.comm = comm / 100 end
-    local pos = 27
+    local pos = 51
     for n = 1, nNext do m.next[n] = string.unpack("<I4", d, pos) pos = pos + 4 end
     for n = 1, nLast do
       local v = string.unpack("<I2", d, pos) pos = pos + 2
@@ -999,7 +1024,7 @@ local function unpackMsg(d)
 end
 
 if ble and ble.on() then
-  local function advertise() ble.advertise({ name = "Galaxy", service = NUS, connectable = true }) end
+  local function advertise() ble.advertise({ name = "FD Badge", service = NUS, connectable = true }) end
   local served = ble.serve({ service = NUS, chars = { { uuid = RX, write = true } } }, function(event, a, b)
     if event == "open" then
       ui.toast("Phone connected")
@@ -1034,7 +1059,7 @@ function on_tick(ms)
   local whole = math.floor(p)
   local live_s, f = est + whole, p - whole
 
-  -- Galaxy's next window
+  -- the validator's next window
   local w = nil
   for _, s in ipairs(nextWindows()) do if s + 3 >= est then w = s break end end
   local left = nil
@@ -1042,8 +1067,8 @@ function on_tick(ms)
   if leading then
     if cdKey ~= "lead" .. win.tx then
       cdKey = "lead" .. win.tx
-      capL:text("LEADER NOW") capL:color("lime")
-      cdL:text("+" .. grouped(win.tx) .. " tx") cdL:color("lime")
+      capL:text("LEADER NOW") capL:color(OURS_TXT)
+      cdL:text("+" .. grouped(win.tx) .. " tx") cdL:color(OURS_TXT)
       cdSub:text(string.format("%.4f SOL fees", win.fee / 1000000000)) cdSub:color("green")
     end
     frameColor(PULSE_L[(now // 60) % 8])
@@ -1054,7 +1079,7 @@ function on_tick(ms)
     if cdKey ~= tenths then
       cdKey = tenths
       capL:text("NEXT LEADER") capL:color("dim")
-      cdL:text(dur(left)) cdL:color(left < 10 and "pink" or "lpurple")
+      cdL:text(dur(left)) cdL:color(left < 10 and "pink" or TEAL)
       if info and info.delinq then
         cdSub:text("DELINQUENT") cdSub:color("pink")
       elseif win.doneAt and now - win.doneAt < 4000 then
@@ -1064,7 +1089,7 @@ function on_tick(ms)
         cdSub:color(skipPct > 0 and "orange" or "dim")
       end
     end
-    frameColor(left < 10 and PULSE_P[(now // 100) % 8] or PURPLE)
+    frameColor(left < 10 and PULSE_P[(now // 100) % 8] or OURS)
   end
 
   if view == "live" then
@@ -1074,8 +1099,8 @@ function on_tick(ms)
     drawSchedule(now, live_s, p)
   else
     drawTimeline(now, p)
-    if leading then gCd:text("LEADER NOW") gCd:color("lime")
-    elseif left then gCd:text(dur(left)) gCd:color(left < 10 and "pink" or "lpurple") end
+    if leading then gCd:text("LEADER NOW") gCd:color(OURS_TXT)
+    elseif left then gCd:text(dur(left)) gCd:color(left < 10 and "pink" or TEAL) end
     gSlot:text(w and ("slot " .. grouped(w)) or "")
   end
   leds(now, left)

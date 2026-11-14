@@ -50,7 +50,7 @@ final class WsClient {
         new SecureRandom().nextBytes(key);
         String req = "GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                 + "Sec-WebSocket-Key: " + Base64.getEncoder().encodeToString(key) + "\r\nSec-WebSocket-Version: 13\r\n"
-                + "User-Agent: GalaxyLive-Android/1\r\n\r\n";
+                + "User-Agent: FiredancerBadge-Android/1\r\n\r\n";
         out.write(req.getBytes(StandardCharsets.US_ASCII));
         out.flush();
         String status = line();

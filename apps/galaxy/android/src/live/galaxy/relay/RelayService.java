@@ -76,7 +76,7 @@ public class RelayService extends Service {
         running = true;
         stop = false;
         NotificationManager nm = getSystemService(NotificationManager.class);
-        nm.createNotificationChannel(new NotificationChannel(CHANNEL, "Relais Galaxy Live", NotificationManager.IMPORTANCE_LOW));
+        nm.createNotificationChannel(new NotificationChannel(CHANNEL, "Relais Firedancer", NotificationManager.IMPORTANCE_LOW));
         if (Build.VERSION.SDK_INT >= 29) startForeground(1, note("Démarrage…"), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
         else startForeground(1, note("Démarrage…"));
         wake = getSystemService(PowerManager.class).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "galaxylive:relay");
@@ -116,7 +116,7 @@ public class RelayService extends Service {
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
         return new Notification.Builder(this, CHANNEL)
                 .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-                .setContentTitle("Galaxy Live")
+                .setContentTitle("Firedancer")
                 .setContentText(text)
                 .setContentIntent(open)
                 .setOngoing(true)
@@ -171,7 +171,7 @@ public class RelayService extends Service {
         if (a == null || !a.isEnabled()) { badgeState = "Bluetooth éteint"; ble.postDelayed(this::scan, 3000); return; }
         BluetoothLeScanner sc = a.getBluetoothLeScanner();
         if (sc == null) { ble.postDelayed(this::scan, 3000); return; }
-        badgeState = "recherche du badge… (app Galaxy Live ouverte ?)";
+        badgeState = "recherche du badge… (app Firedancer ouverte ?)";
         scanCb = new ScanCallback() {
             @Override public void onScanResult(int type, ScanResult r) { ble.post(() -> found(r.getDevice())); }
             @Override public void onScanFailed(int code) {
@@ -239,7 +239,7 @@ public class RelayService extends Service {
                 BluetoothGattService s = g.getService(NUS);
                 BluetoothGattCharacteristic c = s == null ? null : s.getCharacteristic(RX);
                 if (c == null) {
-                    badgeState = "pas d'app Galaxy Live sur cet appareil";
+                    badgeState = "pas d'app Firedancer sur cet appareil";
                     try { g.disconnect(); } catch (SecurityException ignored) {}
                     return;
                 }

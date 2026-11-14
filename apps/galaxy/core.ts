@@ -23,7 +23,8 @@ const MINUTE = 60_000;
 type Epoch = {
   epoch: number; start: number; end: number;
   keys: string[]; leaders: number[];                 // the schedule: keys[leaders[(slot - start) / 4]]
-  windows: number[]; rank: number; stake: bigint; total: bigint;   // ours
+  stakes: bigint[]; total: bigint;                   // stake of each of keys, and their sum
+  own?: { id: string; windows: number[]; rank: number; stake: bigint };   // the followed validator's, worked out when asked
 };
 
 const LEVEL: Record<string, number> = {
@@ -47,9 +48,43 @@ export class Relay {
   upstream = 'connecting';
   vote: Vote | null = null;
 
-  /** identity: the validator's identity key. send: a message for every badge. later: run fn in ms. */
+  voteKey = '';                    // the followed validator's vote account
+  version = '';                    // the dashboard's Firedancer version
+  private pinned: boolean;         // the identity was given, not the dashboard's own
+
+  /** identity: the validator to follow, or '' for the dashboard's own (it says which: summary
+   *  identity_key and vote_key). send: a message for every badge. later: run fn in ms. */
   constructor(private identity: string, private send: (m: object) => void,
-              private later: (fn: () => void, ms: number) => void, private log: (s: string) => void = () => {}) {}
+              private later: (fn: () => void, ms: number) => void, private log: (s: string) => void = () => {}) {
+    this.pinned = identity !== '';
+  }
+
+  /** The followed validator's leader windows, stake and rank in an epoch. */
+  private own(e: Epoch | undefined) {
+    if (!e) return { id: this.identity, windows: [] as number[], rank: 0, stake: 0n };
+    if (e.own?.id === this.identity) return e.own;
+    const idx = this.identity ? e.keys.indexOf(this.identity) : -1;
+    const windows: number[] = [];
+    if (idx >= 0) e.leaders.forEach((x, n) => { if (x === idx) windows.push(e.start + 4 * n); });
+    const my = idx >= 0 ? e.stakes[idx] : 0n;
+    e.own = { id: this.identity, windows, rank: idx >= 0 ? e.stakes.filter((x) => x > my).length + 1 : 0, stake: my };
+    return e.own;
+  }
+
+  // The topics the relay reads. The dashboard sends much more (megabytes of gossip, shreds and
+  // tile metrics): those are dropped on their first bytes, unparsed.
+  private static WANTED = new Set(['slot/update', 'slot/skipped_history_cluster', 'epoch/new', 'peers/update',
+    'summary/estimated_slot', 'summary/root_slot', 'summary/estimated_slot_duration_nanos', 'summary/estimated_tps',
+    'summary/identity_key', 'summary/vote_key', 'summary/version']);
+
+  /** One message from the Firedancer GUI websocket, as text. */
+  handleRaw(text: string) {
+    const m = /^\{"topic":"([a-z_]+)","key":"([a-z_]+)"/.exec(text.length > 96 ? text.slice(0, 96) : text);
+    if (m && !Relay.WANTED.has(m[1] + '/' + m[2])) return;
+    let j: unknown;
+    try { j = JSON.parse(text); } catch { return; }
+    this.handle(j);
+  }
 
   private epochOf(s: number) { for (const e of this.epochs.values()) if (s >= e.start && s <= e.end) return e; }
   private leaderOf(s: number): string | null {
@@ -71,6 +106,12 @@ export class Relay {
       else if (key === 'root_slot') this.root = value;
       else if (key === 'estimated_slot_duration_nanos') this.slotNs = value;
       else if (key === 'estimated_tps') { this.tpsOk = value.success ?? 0; this.tpsFail = value.failed ?? 0; }
+      else if (key === 'version') this.version = String(value);
+      else if (key === 'identity_key' && !this.pinned && typeof value === 'string' && value !== this.identity) {
+        this.identity = value;                       // follow the dashboard's own validator
+        this.vote = null; this.ourBlocks = []; this.sent.clear(); this.skipped.clear();
+        this.log(`following the dashboard's validator ${value}`);
+      } else if (key === 'vote_key' && !this.pinned && typeof value === 'string') this.voteKey = value;
     } else if (topic === 'epoch' && key === 'new') this.onEpoch(value);
     else if (topic === 'peers' && key === 'update') {
       for (const p of [...(value.add ?? []), ...(value.update ?? [])]) {
@@ -85,21 +126,15 @@ export class Relay {
 
   private onEpoch(v: any) {
     const keys = v.staked_pubkeys as string[];
-    const idx = keys.indexOf(this.identity);
-    const windows: number[] = [];
-    if (idx >= 0) (v.leader_slots as number[]).forEach((x, n) => { if (x === idx) windows.push(v.start_slot + 4 * n); });
     const stakes = (v.staked_lamports as string[]).map(BigInt);
-    const my = idx >= 0 ? stakes[idx] : 0n;
-    const rank = idx >= 0 ? stakes.filter((s) => s > my).length + 1 : 0;
-    this.epochs.set(v.epoch, {
-      epoch: v.epoch, start: v.start_slot, end: v.end_slot, keys, leaders: v.leader_slots, windows,
-      rank, stake: my, total: stakes.reduce((a, b) => a + b, 0n),
-    });
-    for (const e of [...this.epochs.keys()]) if (e < v.epoch - 1) this.epochs.delete(e);
+    const e: Epoch = { epoch: v.epoch, start: v.start_slot, end: v.end_slot, keys, leaders: v.leader_slots,
+                       stakes, total: stakes.reduce((a, b) => a + b, 0n) };
+    this.epochs.set(v.epoch, e);
+    for (const n of [...this.epochs.keys()]) if (n < v.epoch - 1) this.epochs.delete(n);
     if (!this.stakes.size || v.start_slot <= this.est) {     // this epoch's (the next one comes early)
       this.stakes = new Map(keys.map((k, i) => [k, stakes[i]]));
     }
-    this.log(`epoch ${v.epoch}: ${windows.length} leader windows, stake rank ${rank}`);
+    this.log(`epoch ${v.epoch}: ${keys.length} validators`);
   }
 
   private onSlot(p: any) {
@@ -132,18 +167,19 @@ export class Relay {
 
   info() {
     const est = this.est, e = this.epochOf(est);
-    const all = e ? e.windows : [];
+    const mine = this.own(e), all = mine.windows;
     const past = all.filter((w) => w + 3 <= this.root).length * 4;
     let skips = 0;
     for (const s of this.skipped) if (e && s >= e.start && s <= e.end) skips++;
-    const upcoming = [...this.epochs.values()].flatMap((x) => x.windows).filter((w) => w + 3 >= est).sort((a, b) => a - b).slice(0, 24);
-    const stake = this.vote?.stake ?? e?.stake ?? 0n;
+    const upcoming = [...this.epochs.values()].flatMap((x) => this.own(x).windows).filter((w) => w + 3 >= est).sort((a, b) => a - b).slice(0, 24);
+    const stake = this.vote?.stake ?? mine.stake;
     return {
       t: 'info',
       name: this.nameOf(this.identity),
       stake: Number(stake / LAMPORTS),                         // SOL, fits a badge's 32-bit integers
       share: e && e.total > 0n ? Number((stake * 100000n) / e.total) / 1000 : 0,
-      rank: e?.rank ?? 0,
+      rank: mine.rank,
+      ver: this.version,                                       // the dashboard's Firedancer version
       comm: this.vote ? this.vote.bps / 100 : null,
       delinq: this.vote?.delinquent ?? false,
       epoch: e?.epoch ?? 0,
@@ -195,7 +231,9 @@ export class Relay {
 
   /** Commission, stake and delinquency: the GUI's peers topic leaves them at 0. From RPC
    *  (getVoteAccounts), else from Stakewiz: public RPC nodes refuse some clouds' addresses. */
-  async readVote(rpcUrl: string, votePubkey: string) {
+  async readVote(rpcUrl: string, pinnedVote: string) {
+    const votePubkey = pinnedVote || this.voteKey;
+    if (!votePubkey) return;
     try {
       const r = await fetch(rpcUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getVoteAccounts', params: [{ votePubkey }] }) });

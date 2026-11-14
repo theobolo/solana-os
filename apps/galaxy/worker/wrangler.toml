@@ -11,9 +11,9 @@ tag = "v1"
 new_sqlite_classes = ["RelayDO"]
 
 [vars]
-FD_WS = "wss://fd-mainnet.stakingfacilities.com/websocket"
-IDENTITY = "9eGrDohdNTAo61DRHyfMuqKWXqYnA3i254Wiszxe8FoY"   # Galaxy's identity
-VOTE = "CvSb7wdQAFpHuSpTYTJnX5SYH4hCfQ9VuGnqrKaKwycB"       # Galaxy's vote account
+FD_WS = "wss://gui.firedancer.io/websocket"                # the Firedancer dashboard to follow
+IDENTITY = ""    # the validator to follow (identity key); empty: the dashboard's own
+VOTE = ""        # its vote account, with IDENTITY
 RPC_URL = "https://api.mainnet-beta.solana.com"
 APP = "galaxy-live"                                         # the badge app's id (app.json)
 BADGE_SERVER = "https://badge-api.solana.com"

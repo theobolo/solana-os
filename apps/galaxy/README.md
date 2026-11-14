@@ -1,10 +1,12 @@
-# Galaxy Live
+# Firedancer Badge
 
-Le cluster Solana qui produit ses blocs, en direct sur le badge, avec le validateur Galaxy au premier plan. C'est une version au format du badge du dashboard Firedancer, signée @ghosty.
+Un dashboard Firedancer sur le badge Solana Breakpoint : les leaders, les slots, les frais et les tips du cluster en direct, d'après un dashboard Firedancer public (par défaut celui de Jump, `gui.firedancer.io`), signé @ghosty.
 
-![Galaxy leader](preview/c_slot2.png)
+![Vue LIVE](preview/a_idle.png)
 
-Ces images viennent d'une prévisualisation, pas du badge lui-même. Le vrai `main.lua` tourne dans Lua 5.5, et les objets `ui` sont redessinés avec les couleurs du thème du badge. Les données viennent du flux réel. Les polices sont des approximations. Animation : [preview/galaxy_live_2x.gif](preview/galaxy_live_2x.gif).
+L'app suit le validateur du dashboard lui-même (« Firedancer Devel » sur celui de Jump) : son stake, son rang, ses fenêtres leader, ses blocs. Pour suivre un autre validateur, ou un autre dashboard, change `IDENTITY`, `VOTE` et `FD_WS` dans `worker/wrangler.toml`.
+
+Les captures viennent d'un simulateur de l'écran (le vrai `main.lua` dans Lua 5.5, de vraies données, des polices approchées), pas du badge. Les GIF du dossier `preview/` datent de la version précédente, aux couleurs de Galaxy. Le dossier, l'identifiant de l'app (`galaxy-live`) et l'adresse du relais gardent leur nom d'origine.
 
 ## Vue LIVE
 

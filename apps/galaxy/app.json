@@ -1,11 +1,11 @@
 {
   "id": "galaxy-live",
-  "name": "Galaxy Live",
+  "name": "Firedancer",
   "version": "1.0.0",
   "author": "@ghosty",
-  "summary": "The Galaxy validator live: stake, blocks, and LEDs on every slot it produces.",
+  "summary": "A Firedancer dashboard on the badge: leaders, slots, fees and tips, live.",
   "icon": "charge",
-  "accent": "9945FF",
+  "accent": "1FC9A9",
   "category": "tools",
   "permissions": ["http", "led", "ble"],
   "hosts": ["galaxy-live-relay.theo-b59.workers.dev"]

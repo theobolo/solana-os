@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Galaxy Live</title>
+<title>Firedancer Badge</title>
 <style>
   :root { --bg: #000; --panel: #111116; --border: #2a2935; --text: #fff; --dim: #8e8c9e; --purple: #9945ff; --green: #14f195; --pink: #eb54bc; }
   * { box-sizing: border-box; }
@@ -27,7 +27,7 @@
 <body>
 <div class="bar"></div>
 <main>
-  <h1>Galaxy Live</h1>
+  <h1>Firedancer Badge</h1>
   <p>Installe l'app sur le badge en USB, puis envoie-lui les données en Bluetooth depuis ce téléphone. À ouvrir dans Chrome sur Android.</p>
 
   <section>
@@ -40,14 +40,14 @@
 
   <section>
     <h2>Recommandé : l'app Android</h2>
-    <p>La page s'arrête quand tu passes à une autre app. L'app Android, elle, continue en arrière-plan (notification « Galaxy Live »). Elle remplace l'étape 2 : l'étape 1 reste à faire ici.</p>
+    <p>La page s'arrête quand tu passes à une autre app. L'app Android, elle, continue en arrière-plan (notification « Firedancer »). Elle remplace l'étape 2 : l'étape 1 reste à faire ici.</p>
     <p>Android te demandera d'autoriser l'installation depuis Chrome : c'est normal pour une app hors du Play Store.</p>
     <button id="apk">Télécharger l'app Android</button>
   </section>
 
   <section>
     <h2>2. Données en direct (Bluetooth)</h2>
-    <p>L'app ouverte sur le badge, choisis « Galaxy » dans la liste. Cette page relaie les slots au badge. Elle continue en arrière-plan (notification « Galaxy Live ») : ne ferme pas l'onglet.</p>
+    <p>L'app ouverte sur le badge, choisis « FD Badge » dans la liste. Cette page relaie les slots au badge. Elle continue en arrière-plan (notification « Firedancer ») : ne ferme pas l'onglet.</p>
     <button id="bridge">Connecter le badge</button>
     <p id="bstat" class="stat" hidden></p>
     <pre id="blog" hidden></pre>
@@ -90,7 +90,7 @@ function packMsg(m) {
   }
   if (m.t === 'info') {
     const next = (m.next || []).slice(0, 24), last = (m.last || []).slice(0, 16);
-    const b = new Uint8Array(26 + next.length * 4 + last.length * 2), d = new DataView(b.buffer);
+    const b = new Uint8Array(50 + next.length * 4 + last.length * 2), d = new DataView(b.buffer);
     b[0] = 73;                                       // "I"
     d.setUint32(1, cap(m.stake, 2147483647), true);
     d.setUint16(5, cap(m.share * 1000, 65535), true);
@@ -101,8 +101,10 @@ function packMsg(m) {
     d.setUint16(15, cap(m.sd, 65535), true); d.setUint16(17, cap(m.leader, 65535), true);
     d.setUint16(19, cap(m.done, 65535), true); d.setUint16(21, cap(m.skip, 65535), true);
     b[23] = m.up === 'live' ? 1 : 0; b[24] = next.length; b[25] = last.length;
-    next.forEach((s, n) => d.setUint32(26 + n * 4, s, true));
-    last.forEach((x, n) => d.setUint16(26 + next.length * 4 + n * 2, cap(x[0], 32767) | (x[1] ? 0x8000 : 0), true));
+    const text = (v, o, max) => { const t = String(v || '').replace(/[^\x20-\x7e]/g, '').slice(0, max); for (let n = 0; n < t.length; n++) b[o + n] = t.charCodeAt(n); };
+    text(m.name, 26, 16); text(m.ver, 42, 8);          // the validator's name, the Firedancer version
+    next.forEach((s, n) => d.setUint32(50 + n * 4, s, true));
+    last.forEach((x, n) => d.setUint16(50 + next.length * 4 + n * 2, cap(x[0], 32767) | (x[1] ? 0x8000 : 0), true));
     return b;
   }
   return null;
@@ -248,7 +250,7 @@ $('install').onclick = async () => {
 
 // Android freezes a page in the background, and the badge stops getting data. A page that
 // plays sound is left running, so play a loop nobody can hear (20 Hz, very low):
-// Android shows it as a "Galaxy Live" media notification.
+// Android shows it as a "Firedancer" media notification.
 let quiet = null;
 function keepAlive(log) {
   if (quiet) return;
@@ -264,7 +266,7 @@ function keepAlive(log) {
   quiet.play().then(() => log("Mode arrière-plan actif : tu peux changer d'app.", 'ok'))
     .catch(() => log("Mode arrière-plan refusé par le navigateur : garde la page ouverte.", 'err'));
   if (navigator.mediaSession) {
-    navigator.mediaSession.metadata = new MediaMetadata({ title: 'Galaxy Live', artist: 'Relais vers le badge' });
+    navigator.mediaSession.metadata = new MediaMetadata({ title: 'Firedancer', artist: 'Relais vers le badge' });
     // "pause" on the notification would freeze the page again: keep playing
     navigator.mediaSession.setActionHandler('pause', () => quiet.play());
   }

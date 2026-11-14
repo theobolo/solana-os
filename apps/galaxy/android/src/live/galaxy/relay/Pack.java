@@ -18,6 +18,12 @@ final class Pack {
         return (int) r;
     }
 
+    private static void text(ByteBuffer b, String v, int o, int max) {
+        String t = v.replaceAll("[^\\x20-\\x7e]", "");
+        if (t.length() > max) t = t.substring(0, max);
+        for (int n = 0; n < t.length(); n++) b.put(o + n, (byte) t.charAt(n));
+    }
+
     private static boolean truthy(Object o) {
         if (o instanceof Boolean) return (Boolean) o;
         if (o instanceof Number) { double d = ((Number) o).doubleValue(); return d != 0 && !Double.isNaN(d); }
@@ -77,7 +83,7 @@ final class Pack {
         if (t.equals("info")) {
             JSONArray next = m.optJSONArray("next"), last = m.optJSONArray("last");
             int nn = next == null ? 0 : Math.min(next.length(), 24), nl = last == null ? 0 : Math.min(last.length(), 16);
-            ByteBuffer b = ByteBuffer.allocate(26 + nn * 4 + nl * 2).order(ByteOrder.LITTLE_ENDIAN);
+            ByteBuffer b = ByteBuffer.allocate(50 + nn * 4 + nl * 2).order(ByteOrder.LITTLE_ENDIAN);
             b.put(0, (byte) 'I');
             b.putInt(1, cap(m.optDouble("stake", 0), 2147483647L));
             b.putShort(5, (short) cap(m.optDouble("share", 0) * 1000, 65535));
@@ -93,11 +99,13 @@ final class Pack {
             b.put(23, (byte) ("live".equals(m.optString("up")) ? 1 : 0));
             b.put(24, (byte) nn);
             b.put(25, (byte) nl);
-            for (int n = 0; n < nn; n++) b.putInt(26 + n * 4, (int) next.optLong(n));
+            text(b, m.isNull("name") ? "" : m.optString("name", ""), 26, 16);   // the validator's name
+            text(b, m.isNull("ver") ? "" : m.optString("ver", ""), 42, 8);      // the Firedancer version
+            for (int n = 0; n < nn; n++) b.putInt(50 + n * 4, (int) next.optLong(n));
             for (int n = 0; n < nl; n++) {
                 JSONArray x = last.optJSONArray(n);
                 int v = x == null ? 0 : cap(x.optDouble(0, 0), 32767) | (truthy(x.opt(1)) ? 0x8000 : 0);
-                b.putShort(26 + nn * 4 + n * 2, (short) v);
+                b.putShort(50 + nn * 4 + n * 2, (short) v);
             }
             return b.array();
         }

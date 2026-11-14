@@ -21,9 +21,9 @@
 
 import { Relay, fromBadgeSocket } from './core.ts';
 
-const FD_WS = process.env.FD_WS ?? 'wss://fd-mainnet.stakingfacilities.com/websocket';
-const IDENTITY = process.env.IDENTITY ?? '9eGrDohdNTAo61DRHyfMuqKWXqYnA3i254Wiszxe8FoY'; // Galaxy
-const VOTE = process.env.VOTE ?? 'CvSb7wdQAFpHuSpTYTJnX5SYH4hCfQ9VuGnqrKaKwycB';
+const FD_WS = process.env.FD_WS ?? 'wss://gui.firedancer.io/websocket';
+const IDENTITY = process.env.IDENTITY ?? '';   // the validator to follow; empty: the dashboard's own
+const VOTE = process.env.VOTE ?? '';           // its vote account, with IDENTITY
 const RPC_URL = process.env.RPC_URL ?? 'https://api.mainnet-beta.solana.com';
 const APP = process.env.APP ?? 'galaxy-live';
 const FRAME_MS = Number(process.env.FRAME_MS ?? 100);
@@ -39,7 +39,7 @@ function broadcast(m: object) {
 }
 const relay = new Relay(IDENTITY, broadcast, (fn, ms) => setTimeout(fn, ms), console.log);
 
-relay.readVote(RPC_URL, VOTE);
+setTimeout(() => relay.readVote(RPC_URL, VOTE), 8000);   // once the dashboard has said which validator is its own
 setInterval(() => relay.readVote(RPC_URL, VOTE), 5 * 60_000);
 setInterval(() => relay.prune(), 10_000);
 
@@ -50,7 +50,7 @@ function connect() {
   const ws = new WebSocket(FD_WS, process.env.HTTPS_PROXY ? ({ proxy: process.env.HTTPS_PROXY } as any) : undefined);
   ws.onopen = () => { relay.upstream = 'live'; delay = 1000; console.log('upstream open'); };
   ws.onmessage = (ev) => {
-    try { relay.handle(JSON.parse(typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data as ArrayBuffer))); } catch {}
+    relay.handleRaw(typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data as ArrayBuffer));
   };
   ws.onclose = () => {
     relay.upstream = 'reconnecting';
@@ -96,4 +96,4 @@ Bun.serve<{ badge: string }>({
     message() {},
   },
 });
-console.log(`relay for ${IDENTITY} on :${process.env.PORT ?? 8080}, upstream ${FD_WS}, frames every ${FRAME_MS} ms`);
+console.log(`relay for ${IDENTITY || "the dashboard's validator"} on :${process.env.PORT ?? 8080}, upstream ${FD_WS}, frames every ${FRAME_MS} ms`);

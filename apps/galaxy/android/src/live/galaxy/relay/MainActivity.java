@@ -50,8 +50,8 @@ public class MainActivity extends Activity {
         bar.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[] {0xFF9945FF, 0xFF14F195}));
         col.addView(bar, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(4)));
 
-        col.addView(text("Galaxy Live", 28, Color.WHITE, true), margins(0, dp(16), 0, dp(4)));
-        col.addView(text("Installe l'app sur le badge en USB, puis envoie-lui les slots de Galaxy en Bluetooth, "
+        col.addView(text("Firedancer Badge", 28, Color.WHITE, true), margins(0, dp(16), 0, dp(4)));
+        col.addView(text("Installe l'app sur le badge en USB, puis envoie-lui les données du dashboard Firedancer en Bluetooth, "
                 + "même quand tu utilises une autre app.", 15, 0xFF8E8C9E, false), margins(0, 0, 0, dp(16)));
 
         col.addView(text("1. Installer sur le badge (USB)", 18, Color.WHITE, true), margins(0, dp(8), 0, dp(2)));
@@ -67,7 +67,7 @@ public class MainActivity extends Activity {
         col.addView(installLog, margins(0, 0, 0, dp(12)));
 
         col.addView(text("2. Relais en direct (Bluetooth)", 18, Color.WHITE, true), margins(0, dp(8), 0, dp(2)));
-        col.addView(text("L'app Galaxy Live ouverte sur le badge.", 14, 0xFF8E8C9E, false));
+        col.addView(text("L'app Firedancer ouverte sur le badge.", 14, 0xFF8E8C9E, false));
         col.addView(button("Démarrer le relais", true, v -> start()), margins(0, dp(10), 0, dp(6)));
         col.addView(button("Arrêter", false, v -> stopService(new Intent(this, RelayService.class))), margins(0, dp(6), 0, dp(6)));
         col.addView(button("Ne pas couper en arrière-plan (batterie)", false, v -> battery()), margins(0, dp(6), 0, dp(16)));

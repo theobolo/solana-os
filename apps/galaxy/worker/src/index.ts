@@ -65,7 +65,7 @@ export default {
 // The relay object's name. A running object keeps the code it started with while sockets
 // hold it open, even across deploys: change this with any change to the relay so the next
 // connection gets an object running the new code (the old one stops once its sockets go).
-const RELAY_NAME = 'relay-4';
+const RELAY_NAME = 'relay-5';
 
 function sameText(a: string, b: string) {   // compared in full, whatever differs
   let d = 0;
@@ -102,7 +102,7 @@ export class RelayDO {
     if (this.idle) { clearTimeout(this.idle); this.idle = null; }
     if (this.timers.length) return;
     this.connect();
-    this.relay.readVote(this.env.RPC_URL, this.env.VOTE);
+    setTimeout(() => this.relay.readVote(this.env.RPC_URL, this.env.VOTE), 8000);   // once we know which validator
     this.timers = [
       setInterval(() => {
         if (!this.clients.size || !this.relay.est) return;
@@ -134,7 +134,7 @@ export class RelayDO {
     this.up = ws;
     ws.addEventListener('open', () => { this.relay.upstream = 'live'; this.delay = 1000; });
     ws.addEventListener('message', (ev) => {
-      try { this.relay.handle(JSON.parse(typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data as ArrayBuffer))); } catch {}
+      this.relay.handleRaw(typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data as ArrayBuffer));
     });
     const again = () => {
       if (this.up !== ws) return;            // stopped, or replaced already
