@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Galaxy Live relay for Android: follows the relay and feeds the badge over Bluetooth,
+<!-- Firedancer GUI relay for Android: follows the relay and feeds the badge over Bluetooth,
      in a foreground service so it keeps going while the phone does something else. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="live.galaxy.relay">
+    package="app.firedancergui">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
@@ -24,7 +24,7 @@
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
     <application
-        android:label="Firedancer"
+        android:label="Firedancer GUI"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
@@ -33,7 +33,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- the badge plugged in over USB: offer to open Galaxy Live, with access to it -->
+            <!-- the badge plugged in over USB: offer to open Firedancer GUI, with access to it -->
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>

@@ -1,4 +1,4 @@
-package live.galaxy.relay;
+package app.firedancergui;
 
 import android.hardware.usb.UsbConstants;
 import android.hardware.usb.UsbDevice;

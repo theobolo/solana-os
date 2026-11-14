@@ -1,6 +1,6 @@
-// Galaxy Live relay for Bun: follows a Firedancer GUI websocket and hands the badge
+// Firedancer GUI relay for Bun: follows a Firedancer GUI websocket and hands the badge
 // app (main.lua) a live, badge-sized view of the cluster and of ONE validator
-// (Galaxy by default). The same relay for Cloudflare Workers: worker/.
+// (the dashboard's own by default). The same relay for Cloudflare Workers: worker/.
 //
 //   GET /live      the badge's WebSocket (badge_ticket checked, see LUA_API.md "ws")
 //   GET /status    the latest info and frame as JSON, for you
@@ -13,7 +13,7 @@
 //
 // Run it behind HTTPS on port 443 at the host the app lists:
 //
-//   PUBLIC_URL=https://galaxy.example.com PORT=8080 bun server.ts
+//   PUBLIC_URL=https://relay.example.com PORT=8080 bun server.ts
 //
 // Env: FD_WS (Firedancer GUI websocket), IDENTITY and VOTE (the validator's keys),
 // RPC_URL (for commission, stake and delinquency), APP (the badge app id),
@@ -25,10 +25,10 @@ const FD_WS = process.env.FD_WS ?? 'wss://gui.firedancer.io/websocket';
 const IDENTITY = process.env.IDENTITY ?? '';   // the validator to follow; empty: the dashboard's own
 const VOTE = process.env.VOTE ?? '';           // its vote account, with IDENTITY
 const RPC_URL = process.env.RPC_URL ?? 'https://api.mainnet-beta.solana.com';
-const APP = process.env.APP ?? 'galaxy-live';
+const APP = process.env.APP ?? 'firedancer-gui';
 const FRAME_MS = Number(process.env.FRAME_MS ?? 100);
 const BADGE_SERVER = process.env.BADGE_SERVER ?? 'https://badge-api.solana.com';
-const PUBLIC_URL = process.env.PUBLIC_URL ?? 'https://galaxy.example.com';
+const PUBLIC_URL = process.env.PUBLIC_URL ?? 'https://relay.example.com';
 const HOST = new URL(PUBLIC_URL).host;
 const DEV = process.env.DEV_NO_TICKET === '1';
 
@@ -84,7 +84,7 @@ Bun.serve<{ badge: string }>({
       if (who && server.upgrade(req, { data: { badge: who.badge } })) return undefined;
       return new Response('no', { status: 403 });
     }
-    return new Response('Galaxy Live relay', { status: 404 });
+    return new Response('Firedancer GUI relay', { status: 404 });
   },
   websocket: {
     open(ws) {

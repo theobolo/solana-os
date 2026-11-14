@@ -1,4 +1,4 @@
-name = "galaxy-live-relay"
+name = "firedancer-gui-relay"
 main = "src/index.ts"
 compatibility_date = "2026-01-01"
 
@@ -15,7 +15,7 @@ FD_WS = "wss://gui.firedancer.io/websocket"                # the Firedancer dash
 IDENTITY = ""    # the validator to follow (identity key); empty: the dashboard's own
 VOTE = ""        # its vote account, with IDENTITY
 RPC_URL = "https://api.mainnet-beta.solana.com"
-APP = "galaxy-live"                                         # the badge app's id (app.json)
+APP = "firedancer-gui"                                         # the badge app's id (app.json)
 BADGE_SERVER = "https://badge-api.solana.com"
 FRAME_MS = "100"
 
@@ -26,7 +26,7 @@ globs = ["**/*.lua", "**/*.html"]
 fallthrough = true
 
 # Files too big or too private for the code: the Android app (android/build.sh), put with
-#   npx wrangler kv key put --binding FILES galaxy-live.apk --path ../android/build/galaxy-live.apk --remote
+#   npx wrangler kv key put --binding FILES firedancer-gui.apk --path ../android/build/firedancer-gui.apk --remote
 [[kv_namespaces]]
 binding = "FILES"
 id = "c912f1d378e34a77be0e27045ff2592f"

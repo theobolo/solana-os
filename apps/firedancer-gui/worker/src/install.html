@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Firedancer Badge</title>
+<title>Firedancer GUI</title>
 <style>
   :root { --bg: #000; --panel: #111116; --border: #2a2935; --text: #fff; --dim: #8e8c9e; --purple: #9945ff; --green: #14f195; --pink: #eb54bc; }
   * { box-sizing: border-box; }
@@ -27,7 +27,7 @@
 <body>
 <div class="bar"></div>
 <main>
-  <h1>Firedancer Badge</h1>
+  <h1>Firedancer GUI</h1>
   <p>Installe l'app sur le badge en USB, puis envoie-lui les données en Bluetooth depuis ce téléphone. À ouvrir dans Chrome sur Android.</p>
 
   <section>
@@ -40,14 +40,14 @@
 
   <section>
     <h2>Recommandé : l'app Android</h2>
-    <p>La page s'arrête quand tu passes à une autre app. L'app Android, elle, continue en arrière-plan (notification « Firedancer »). Elle remplace l'étape 2 : l'étape 1 reste à faire ici.</p>
+    <p>La page s'arrête quand tu passes à une autre app. L'app Android, elle, continue en arrière-plan (notification « Firedancer GUI »). Elle remplace l'étape 2 : l'étape 1 reste à faire ici.</p>
     <p>Android te demandera d'autoriser l'installation depuis Chrome : c'est normal pour une app hors du Play Store.</p>
     <button id="apk">Télécharger l'app Android</button>
   </section>
 
   <section>
     <h2>2. Données en direct (Bluetooth)</h2>
-    <p>L'app ouverte sur le badge, choisis « FD Badge » dans la liste. Cette page relaie les slots au badge. Elle continue en arrière-plan (notification « Firedancer ») : ne ferme pas l'onglet.</p>
+    <p>L'app ouverte sur le badge, choisis « FD Badge » dans la liste. Cette page relaie les slots au badge. Elle continue en arrière-plan (notification « Firedancer GUI ») : ne ferme pas l'onglet.</p>
     <button id="bridge">Connecter le badge</button>
     <p id="bstat" class="stat" hidden></p>
     <pre id="blog" hidden></pre>
@@ -113,7 +113,7 @@ function packMsg(m) {
 
 <script>
 const $ = (id) => document.getElementById(id);
-const APP = 'galaxy-live';
+const APP = 'firedancer-gui';
 function logTo(el) { el.hidden = false; return (s, cls) => { const e = document.createElement('div'); if (cls) e.className = cls; e.textContent = s; el.append(e); el.scrollTop = el.scrollHeight; }; }
 
 // ---------------------------------------------------------------- 1. install over USB (CH340, the badge's serial console)
@@ -197,6 +197,7 @@ $('install').onclick = async () => {
     const ver = (inf.match(/(\d+\.\d+\.\d+)/) || [])[1];
     if (ver) log('Solana OS ' + ver);
     await cmd('open home');                                // close the app if it runs
+    try { await cmd('lua rm galaxy-live'); } catch {}      // the app under its first name
     await sleep(1500);                                     // let it close and the launcher draw
 
     const files = [['app.json', await (await fetch('/app/app.json')).text()], ['main.lua', await (await fetch('/app/main.lua')).text()]];
@@ -266,7 +267,7 @@ function keepAlive(log) {
   quiet.play().then(() => log("Mode arrière-plan actif : tu peux changer d'app.", 'ok'))
     .catch(() => log("Mode arrière-plan refusé par le navigateur : garde la page ouverte.", 'err'));
   if (navigator.mediaSession) {
-    navigator.mediaSession.metadata = new MediaMetadata({ title: 'Firedancer', artist: 'Relais vers le badge' });
+    navigator.mediaSession.metadata = new MediaMetadata({ title: "Firedancer GUI", artist: 'Relais vers le badge' });
     // "pause" on the notification would freeze the page again: keep playing
     navigator.mediaSession.setActionHandler('pause', () => quiet.play());
   }
@@ -279,7 +280,7 @@ function keepAlive(log) {
 $('apk').onclick = () => {
   const key = new URLSearchParams(location.hash.slice(1)).get('k');
   if (!key) { alert("Il manque la clé dans l'adresse (…/install#k=…)."); return; }
-  location.href = '/app/galaxy-live.apk?k=' + encodeURIComponent(key);
+  location.href = '/app/firedancer-gui.apk?k=' + encodeURIComponent(key);
 };
 
 // ---------------------------------------------------------------- 2. live data over Bluetooth

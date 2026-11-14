@@ -1,4 +1,4 @@
-package live.galaxy.relay;
+package app.firedancergui;
 
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;

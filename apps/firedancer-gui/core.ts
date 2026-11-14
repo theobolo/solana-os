@@ -1,4 +1,4 @@
-// Galaxy Live relay, the part that is the same wherever it runs (Bun: server.ts,
+// Firedancer GUI relay, the part that is the same wherever it runs (Bun: server.ts,
 // Cloudflare: worker/src/index.ts): it takes the Firedancer GUI websocket's
 // messages and builds the badge-sized ones.
 //

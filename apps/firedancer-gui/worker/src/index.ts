@@ -1,9 +1,9 @@
-// Galaxy Live relay on Cloudflare Workers: one Durable Object holds the websocket
+// Firedancer GUI relay on Cloudflare Workers: one Durable Object holds the websocket
 // to the Firedancer GUI and the badges' sockets, and sends them what core.ts builds.
 //
 //   GET /live      the badge's WebSocket (badge_ticket checked, see LUA_API.md "ws")
 //   GET /status    whether it is following the feed, and the latest info and frame
-//   GET /app/galaxy-live.apk?k=<PHONE_KEY>  the Android relay app (android/), from KV
+//   GET /app/firedancer-gui.apk?k=<PHONE_KEY>  the Android relay app (android/), from KV
 //   GET /install   a page for a phone: installs the app on the badge over USB, then feeds
 //                  it over Bluetooth from GET /phone?k=<PHONE_KEY> (the same messages)
 //
@@ -11,7 +11,7 @@
 // last one left), so it costs nothing when nobody is watching: the first badge
 // waits a second or two for the leader schedule.
 //
-//   cd apps/galaxy/worker && npx wrangler deploy
+//   cd apps/firedancer-gui/worker && npx wrangler deploy
 //
 // Settings are the [vars] of wrangler.toml.
 
@@ -25,7 +25,7 @@ interface Env {
   FD_WS: string; IDENTITY: string; VOTE: string; RPC_URL: string; APP: string;
   BADGE_SERVER: string; FRAME_MS: string; DEV_NO_TICKET?: string;
   PHONE_KEY?: string;
-  FILES: KVNamespace;                     // galaxy-live.apk (it holds PHONE_KEY: served with the key only)                    // a secret: lets the /install page's phone follow the relay
+  FILES: KVNamespace;                     // firedancer-gui.apk (it holds PHONE_KEY: served with the key only)                    // a secret: lets the /install page's phone follow the relay
 }
 
 export default {
@@ -35,13 +35,13 @@ export default {
     if (u.pathname === '/install') return new Response(page, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
     if (u.pathname === '/app/main.lua') return new Response(mainLua, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
     if (u.pathname === '/app/app.json') return new Response(JSON.stringify(manifest, null, 2) + '\n', { headers: { 'Content-Type': 'application/json' } });
-    if (u.pathname === '/app/galaxy-live.apk') {
+    if (u.pathname === '/app/firedancer-gui.apk') {
       const k = u.searchParams.get('k') ?? '';
       if (!env.PHONE_KEY || k.length !== env.PHONE_KEY.length || !sameText(k, env.PHONE_KEY)) return new Response('no', { status: 403 });
-      const apk = await env.FILES.get('galaxy-live.apk', 'arrayBuffer');
+      const apk = await env.FILES.get('firedancer-gui.apk', 'arrayBuffer');
       if (!apk) return new Response('no app uploaded yet', { status: 404 });
       return new Response(apk, { headers: { 'Content-Type': 'application/vnd.android.package-archive',
-        'Content-Disposition': 'attachment; filename="galaxy-live.apk"', 'Cache-Control': 'no-store' } });
+        'Content-Disposition': 'attachment; filename="firedancer-gui.apk"', 'Cache-Control': 'no-store' } });
     }
     if (u.pathname === '/phone') {
       if (req.headers.get('Upgrade') !== 'websocket') return new Response('a WebSocket, please', { status: 426 });
@@ -49,7 +49,7 @@ export default {
       if (!env.PHONE_KEY || k.length !== env.PHONE_KEY.length || !sameText(k, env.PHONE_KEY)) return new Response('no', { status: 403 });
       return env.RELAY.get(env.RELAY.idFromName(RELAY_NAME)).fetch(req);
     }
-    if (u.pathname !== '/live' && u.pathname !== '/status') return new Response('Galaxy Live relay', { status: 404 });
+    if (u.pathname !== '/live' && u.pathname !== '/status') return new Response('Firedancer GUI relay', { status: 404 });
     if (u.pathname === '/live') {
       // The ticket is checked here, not in the object: this code always runs with the
       // latest settings, while an object that is busy keeps the ones it started with.

@@ -1,4 +1,4 @@
-package live.galaxy.relay;
+package app.firedancergui;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -18,7 +18,7 @@ final class Installer {
     interface Port { void write(byte[] b) throws IOException; }
     interface Log { void line(String s, int kind); void progress(double p); }   // kind: 0 info, 1 ok, 2 error
 
-    static final String APP = "galaxy-live";
+    static final String APP = "firedancer-gui";
     private static final Pattern ANSI = Pattern.compile("\u001b\\[[0-9;?]*[A-Za-z]");
     private static final Pattern NL_PROMPT = Pattern.compile("[\r\n][^\r\n]*sol>");
 
@@ -144,6 +144,7 @@ final class Installer {
         Matcher v = Pattern.compile("(\\d+\\.\\d+\\.\\d+)").matcher(cmd("info", 12000, true));
         if (v.find()) log.line("Solana OS " + v.group(1), 0);
         cmd("open home", 12000, true);                       // close the app if it runs
+        try { cmd("lua rm galaxy-live", 12000, true); } catch (IOException ignored) {}   // the app under its first name
         sleep(1500);                                          // let it close and the launcher draw
 
         String[] names = { "app.json", "main.lua" };

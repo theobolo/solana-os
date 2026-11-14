@@ -1,6 +1,6 @@
 {
-  "id": "galaxy-live",
-  "name": "Firedancer",
+  "id": "firedancer-gui",
+  "name": "Firedancer GUI",
   "version": "1.0.0",
   "author": "@ghosty",
   "summary": "A Firedancer dashboard on the badge: leaders, slots, fees and tips, live.",
@@ -8,5 +8,5 @@
   "accent": "1FC9A9",
   "category": "tools",
   "permissions": ["http", "led", "ble"],
-  "hosts": ["galaxy-live-relay.theo-b59.workers.dev"]
+  "hosts": ["firedancer-gui-relay.theo-b59.workers.dev"]
 }

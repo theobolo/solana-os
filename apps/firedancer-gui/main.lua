@@ -39,7 +39,7 @@
 -- Numbers: a badge has 32-bit integers and 32-bit floats. Slot numbers (469 million)
 -- stay integers; only differences between slots ever become floats.
 
-local RELAY = "wss://galaxy-live-relay.theo-b59.workers.dev/live"   -- your relay; its host goes in app.json "hosts"
+local RELAY = "wss://firedancer-gui-relay.theo-b59.workers.dev/live"   -- your relay; its host goes in app.json "hosts"
 local OWNER = "ghosty"
 
 ---------------------------------------------------------------------------------
@@ -177,8 +177,8 @@ ui.label(282, 10, "TPS", { size = 12, color = "dim" })
 local DOTC = {}                  -- the live dot's pulse, 12 steps
 for i = 0, 11 do DOTC[i] = mix(0x0A4A40, TEAL, (math.sin(i / 12 * 2 * math.pi) + 1) / 2) end
 
-local views = { live = {}, schedule = {}, galaxy = {} }
-local ORDER = { "live", "schedule", "galaxy" }
+local views = { live = {}, schedule = {}, validator = {} }
+local ORDER = { "live", "schedule", "validator" }
 local function V(name, o) local t = views[name] t[#t + 1] = o return o end
 
 ---------------------------------------------------------------------------------
@@ -371,21 +371,21 @@ end
 ---------------------------------------------------------------------------------
 -- VALIDATOR view
 
-local gTitle = V("galaxy", L(8, 28, "LEADER WINDOWS" .. DOT .. "NEXT 10 MIN", { size = 12, color = TEAL, w = 304 }))
+local gTitle = V("validator", L(8, 28, "LEADER WINDOWS" .. DOT .. "NEXT 10 MIN", { size = 12, color = TEAL, w = 304 }))
 local TL_Y = 44
-local tl = V("galaxy", C(0, TL_Y, 320, 40, { color = "bg" }))
+local tl = V("validator", C(0, TL_Y, 320, 40, { color = "bg" }))
 local tlKey = nil
 for m = 0, 10, 2 do
-  V("galaxy", ui.label(m == 10 and 290 or (10 + m * 30 - 6), TL_Y + 42, m == 0 and "now" or (m .. "m"), { size = 12, color = "dim" }))
+  V("validator", ui.label(m == 10 and 290 or (10 + m * 30 - 6), TL_Y + 42, m == 0 and "now" or (m .. "m"), { size = 12, color = "dim" }))
 end
-V("galaxy", ui.label(8, 104, "NEXT WINDOW", { size = 12, color = "dim" }))
-local gCd = V("galaxy", L(8, 116, "", { size = 32, color = TEAL, w = 180 }))
-local gSlot = V("galaxy", L(190, 104, "", { size = 12, color = "dim", w = 122, align = "right" }))
-local gStats = V("galaxy", L(190, 120, "", { size = 14, w = 122, align = "right" }))
-local gStats2 = V("galaxy", L(100, 138, "", { size = 12, color = "dim", w = 212, align = "right" }))
-V("galaxy", ui.label(8, 156, "LAST 16 BLOCKS" .. DOT .. "TRANSACTIONS", { size = 12, color = TEAL }))
+V("validator", ui.label(8, 104, "NEXT WINDOW", { size = 12, color = "dim" }))
+local gCd = V("validator", L(8, 116, "", { size = 32, color = TEAL, w = 180 }))
+local gSlot = V("validator", L(190, 104, "", { size = 12, color = "dim", w = 122, align = "right" }))
+local gStats = V("validator", L(190, 120, "", { size = 14, w = 122, align = "right" }))
+local gStats2 = V("validator", L(100, 138, "", { size = 12, color = "dim", w = 212, align = "right" }))
+V("validator", ui.label(8, 156, "LAST 16 BLOCKS" .. DOT .. "TRANSACTIONS", { size = 12, color = TEAL }))
 local BAR_Y = 170
-local bars = V("galaxy", C(0, BAR_Y, 320, 46, { color = "bg" }))
+local bars = V("validator", C(0, BAR_Y, 320, 46, { color = "bg" }))
 
 local view = "live"
 local function showView(v)
@@ -824,7 +824,7 @@ local function onInfo(m)
     for i, b in ipairs(m.last) do
       if type(b) == "table" then blocks[i] = { b[1] or 0, b[2] == 1 } end
     end
-    if view == "galaxy" then drawBars() end
+    if view == "validator" then drawBars() end
   end
 end
 
@@ -885,7 +885,7 @@ local function onSlot(m)
   if ok then win.tx = win.tx + (m.tx or 0) win.fee = win.fee + (m.fee or 0) else win.skip = true end
   table.insert(blocks, 1, { m.tx or 0, not ok })
   blocks[17] = nil
-  if view == "galaxy" then drawBars() end
+  if view == "validator" then drawBars() end
   ledSlot(i, ok)
   if i == 4 then win.on = false win.doneAt = sys.millis() end
 end
@@ -1127,7 +1127,7 @@ function on_key(key)
     for k = 1, #pool do pool[k].w, pool[k].y, pool[k].iconKey = nil, nil, {} end
     bgShape, lastOff, schedDirty, upKey = nil, nil, true, {}
     chartKey, tlKey = nil, nil
-    if view == "galaxy" then drawBars() end
+    if view == "validator" then drawBars() end
     return true
   elseif key == "select" then
     mode = mode % #MODES + 1

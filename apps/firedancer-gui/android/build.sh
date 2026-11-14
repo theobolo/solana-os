@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds galaxy-live.apk without Gradle: aapt2, javac, d8, zipalign, apksigner.
+# Builds firedancer-gui.apk without Gradle: aapt2, javac, d8, zipalign, apksigner.
 #
 #   ANDROID_HOME=~/android-sdk PHONE_KEY=<the Worker's PHONE_KEY> ./build.sh
 #
@@ -12,13 +12,13 @@ SDK=${ANDROID_HOME:?set ANDROID_HOME}
 BT=$SDK/build-tools/${BUILD_TOOLS:-35.0.0}
 JAR=$SDK/platforms/android-34/android.jar
 : "${PHONE_KEY:?set PHONE_KEY}"
-HOST=${RELAY_HOST:-galaxy-live-relay.theo-b59.workers.dev}
-KS=${KEYSTORE:-$HOME/.android/galaxy-live.jks}
+HOST=${RELAY_HOST:-firedancer-gui-relay.theo-b59.workers.dev}
+KS=${KEYSTORE:-$HOME/.android/firedancer-gui.jks}
 VERSION=${VERSION:-1}
 
-rm -rf build && mkdir -p build/gen/live/galaxy/relay build/classes build/dex
-cat > build/gen/live/galaxy/relay/Config.java <<JAVA
-package live.galaxy.relay;
+rm -rf build && mkdir -p build/gen/app/firedancergui build/classes build/dex
+cat > build/gen/app/firedancergui/Config.java <<JAVA
+package app.firedancergui;
 final class Config {
     static final String HOST = "$HOST";
     static final String KEY = "$PHONE_KEY";
@@ -30,16 +30,16 @@ JAVA
   --min-sdk-version 26 --target-sdk-version 34 --version-code "$VERSION" --version-name "1.$((VERSION - 1))" --auto-add-overlay
 # Java 8 APIs from the JDK (lambdas need its LambdaMetafactory), Android's from android.jar; d8 desugars.
 javac -nowarn -Xlint:-options -encoding UTF-8 --release 8 -classpath "$JAR" -d build/classes \
-  src/live/galaxy/relay/*.java build/gen/live/galaxy/relay/Config.java
+  src/app/firedancergui/*.java build/gen/app/firedancergui/Config.java
 "$BT/d8" --release --min-api 26 --lib "$JAR" --output build/dex $(find build/classes -name '*.class')
 cp build/base.apk build/unsigned.apk
 (cd build/dex && zip -q ../unsigned.apk classes.dex)
 "$BT/zipalign" -f -p 4 build/unsigned.apk build/aligned.apk
 if [ ! -f "$KS" ]; then
   mkdir -p "$(dirname "$KS")"
-  keytool -genkeypair -keystore "$KS" -storepass REDACTED -keypass REDACTED -alias galaxy-live \
-    -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Galaxy Live" >/dev/null 2>&1
+  keytool -genkeypair -keystore "$KS" -storepass REDACTED -keypass REDACTED -alias firedancer-gui \
+    -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Firedancer GUI" >/dev/null 2>&1
 fi
-"$BT/apksigner" sign --ks "$KS" --ks-pass pass:REDACTED --key-pass pass:REDACTED --out build/galaxy-live.apk build/aligned.apk
-"$BT/apksigner" verify build/galaxy-live.apk
-ls -l build/galaxy-live.apk
+"$BT/apksigner" sign --ks "$KS" --ks-pass pass:REDACTED --key-pass pass:REDACTED --out build/firedancer-gui.apk build/aligned.apk
+"$BT/apksigner" verify build/firedancer-gui.apk
+ls -l build/firedancer-gui.apk
