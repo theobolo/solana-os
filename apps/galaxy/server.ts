@@ -1,31 +1,40 @@
 // Galaxy Live relay: follows a Firedancer GUI websocket and hands the badge app
-// (apps/galaxy/main.lua) a compact live view of ONE validator.
+// (apps/galaxy/main.lua) a live, badge-sized view of the cluster and of ONE
+// validator (Galaxy by default).
 //
 //   GET /live      the badge's WebSocket (badge_ticket checked, see LUA_API.md "ws")
-//   GET /status    the same state as JSON, for you
+//   GET /status    the latest info and frame as JSON, for you
 //
 // Why a relay: the Firedancer GUI sends two ~370 KB leader schedules on connect
 // and hundreds of messages a second; a badge closes a socket on any message over
-// 4 KB and buffers 8. The relay keeps the schedule, picks out the validator's
-// leader slots and sends the badge a few hundred bytes now and then:
+// 4 KB and holds 8. The relay keeps the schedule and the slots' states and sends:
 //
-//   {"t":"info", ...}        every 5 s and on connect: stake, rank, epoch, next leader window
-//   {"t":"slot","s":N,"i":0..3,"st":"ok"|"skip","tx":n,"fee":lamports}
-//                            each of the validator's slots, as soon as it completes or is skipped
+//   {"t":"f", ...}     every FRAME_MS (100 ms) when something changed: the leader
+//                      carousel, i.e. the 2 next leader windows, the current one and
+//                      the 2 before, each [start, leader name, 1 if ours, 4 state
+//                      digits, tx, [ok, fail] x 4], plus the estimated slot and the cluster's TPS
+//                      (ok, fail). A whole picture each time, so a lost or late
+//                      frame costs nothing.
+//   {"t":"slot", ...}  each of our slots, as soon as it completes or is skipped
+//   {"t":"info", ...}  every 2 s: stake, rank, epoch, blocks, skips, our next 24 windows
+//
+// Slot state digits: 0 future, 1 being made, 2 completed, 3 notarized / confirmed,
+// 4 rooted / finalized, 5 skipped.
 //
 // Run it with Bun behind HTTPS on port 443 at the host the app lists:
 //
 //   PUBLIC_URL=https://galaxy.example.com PORT=8080 bun server.ts
 //
-// Env: FD_WS (Firedancer GUI websocket), IDENTITY (the validator's identity key),
-// VOTE (its vote account) and RPC_URL (for commission, stake and delinquency),
-// APP (the badge app id), DEV_NO_TICKET=1 to let any client in (local tests only).
+// Env: FD_WS (Firedancer GUI websocket), IDENTITY and VOTE (the validator's keys),
+// RPC_URL (for commission, stake and delinquency), APP (the badge app id),
+// FRAME_MS (default 100), DEV_NO_TICKET=1 to let any client in (local tests only).
 
 const FD_WS = process.env.FD_WS ?? 'wss://fd-mainnet.stakingfacilities.com/websocket';
 const IDENTITY = process.env.IDENTITY ?? '9eGrDohdNTAo61DRHyfMuqKWXqYnA3i254Wiszxe8FoY'; // Galaxy
-const VOTE = process.env.VOTE ?? 'CvSb7wdQAFpHuSpTYTJnX5SYH4hCfQ9VuGnqrKaKwycB';         // Galaxy's vote account
+const VOTE = process.env.VOTE ?? 'CvSb7wdQAFpHuSpTYTJnX5SYH4hCfQ9VuGnqrKaKwycB';
 const RPC_URL = process.env.RPC_URL ?? 'https://api.mainnet-beta.solana.com';
 const APP = process.env.APP ?? 'galaxy-live';
+const FRAME_MS = Number(process.env.FRAME_MS ?? 100);
 const BADGE_SERVER = process.env.BADGE_SERVER ?? 'https://badge-api.solana.com';
 const PUBLIC_URL = process.env.PUBLIC_URL ?? 'https://galaxy.example.com';
 const HOST = new URL(PUBLIC_URL).host;
@@ -33,100 +42,139 @@ const DEV = process.env.DEV_NO_TICKET === '1';
 const MINUTE = 60_000;
 const LAMPORTS = 1_000_000_000n;
 
-// ---------------------------------------------------------------- validator state
-type Epoch = { epoch: number; start: number; end: number; windows: number[]; rank: number; stake: bigint; total: bigint };
+// ---------------------------------------------------------------- cluster state
+type Epoch = {
+  epoch: number; start: number; end: number;
+  keys: string[]; leaders: number[];                 // the schedule: keys[leaders[(slot - start) / 4]]
+  windows: number[]; rank: number; stake: bigint; total: bigint;   // ours
+};
 const epochs = new Map<number, Epoch>();
-const mine = new Map<number, { i: number }>();       // slot -> index in its window, both epochs
-const status = new Map<number, 'ok' | 'skip'>();     // what we told badges about each of our slots
+const names = new Map<string, string>();             // identity -> validator name
+const slots = new Map<number, { st: number; ok: number; fail: number }>();  // recent slots' state
+const ourBlocks: { s: number; tx: number; skip: boolean }[] = [];  // our last 16 slots, newest first
+const sent = new Map<number, 'ok' | 'skip'>();       // what badges heard about each of our slots
 const skipped = new Set<number>();                   // our slots skipped for good
-let est = 0, root = 0, slotNs = 400_000_000;         // estimated slot, root slot, slot duration
-let peer: { name?: string; stake?: string; commission?: number; lastVote?: number; delinquent?: boolean } = {};
+let est = 0, root = 0, slotNs = 400_000_000, tpsOk = 0, tpsFail = 0;
 let upstream = 'connecting';
 
-function onEpoch(v: any) {
-  const idx = (v.staked_pubkeys as string[]).indexOf(IDENTITY);
-  const windows: number[] = [];
-  if (idx >= 0) (v.leader_slots as number[]).forEach((x, n) => { if (x === idx) windows.push(v.start_slot + 4 * n); });
-  // stake rank from the epoch's stake table
-  const stakes = (v.staked_lamports as string[]).map(BigInt);
-  const my = idx >= 0 ? stakes[idx] : 0n;
-  const total = stakes.reduce((a, b) => a + b, 0n);
-  const rank = idx >= 0 ? stakes.filter((s) => s > my).length + 1 : 0;
-  epochs.set(v.epoch, { epoch: v.epoch, start: v.start_slot, end: v.end_slot, windows, rank, stake: my, total });
-  for (const w of windows) for (let i = 0; i < 4; i++) mine.set(w + i, { i });
-  // forget epochs we no longer need
-  for (const e of [...epochs.keys()]) if (e < v.epoch - 1) {
-    for (const w of epochs.get(e)!.windows) for (let i = 0; i < 4; i++) { mine.delete(w + i); status.delete(w + i); skipped.delete(w + i); }
-    epochs.delete(e);
-  }
-  console.log(`epoch ${v.epoch}: ${windows.length} leader windows, stake rank ${rank}`);
+const epochOf = (s: number) => [...epochs.values()].find((e) => s >= e.start && s <= e.end);
+function leaderOf(s: number): string | null {
+  const e = epochOf(s);
+  return e ? e.keys[e.leaders[Math.floor((s - e.start) / 4)]] ?? null : null;
+}
+const isOurs = (s: number) => leaderOf(s) === IDENTITY;
+function nameOf(id: string | null) {
+  if (!id) return '?';
+  const n = (names.get(id) ?? id.slice(0, 4) + '..' + id.slice(-4)).replace(/[^\x20-\x7e]/g, '').trim();
+  return n.slice(0, 16) || id.slice(0, 8);
 }
 
+function onEpoch(v: any) {
+  const keys = v.staked_pubkeys as string[];
+  const idx = keys.indexOf(IDENTITY);
+  const windows: number[] = [];
+  if (idx >= 0) (v.leader_slots as number[]).forEach((x, n) => { if (x === idx) windows.push(v.start_slot + 4 * n); });
+  const stakes = (v.staked_lamports as string[]).map(BigInt);
+  const my = idx >= 0 ? stakes[idx] : 0n;
+  epochs.set(v.epoch, {
+    epoch: v.epoch, start: v.start_slot, end: v.end_slot, keys, leaders: v.leader_slots, windows,
+    rank: idx >= 0 ? stakes.filter((s) => s > my).length + 1 : 0, stake: my,
+    total: stakes.reduce((a, b) => a + b, 0n),
+  });
+  for (const e of [...epochs.keys()]) if (e < v.epoch - 1) epochs.delete(e);
+  console.log(`epoch ${v.epoch}: ${windows.length} leader windows, stake rank ${epochs.get(v.epoch)!.rank}`);
+}
+
+const LEVEL: Record<string, number> = {
+  incomplete: 1, completed: 2, notarized: 3, optimistically_confirmed: 3,
+  rooted: 4, finalized: 4, skip_notarized: 5, skipped: 5,
+};
+
 function onSlot(p: any) {
-  const m = mine.get(p.slot);
-  if (!m) return;
-  const lv = p.level as string;
-  let st: 'ok' | 'skip' | null = null;
-  if (lv === 'skipped' || lv === 'skip_notarized' || p.skipped === true) st = 'skip';
-  else if (lv !== 'incomplete') st = 'ok';
-  if (lv === 'skipped' || (p.skipped === true && (lv === 'rooted' || lv === 'finalized'))) skipped.add(p.slot);
-  if (st && status.get(p.slot) !== st) {
-    status.set(p.slot, st);
+  let st = LEVEL[p.level as string] ?? 1;
+  if (p.skipped === true) st = 5;
+  const ok = p.success_transaction_cnt ?? 0, fail = p.failed_transaction_cnt ?? 0, tx = ok + fail;
+  slots.set(p.slot, { st, ok, fail });
+  if (!isOurs(p.slot)) return;
+  if (p.level === 'skipped' || (p.skipped === true && (p.level === 'rooted' || p.level === 'finalized'))) skipped.add(p.slot);
+  const now: 'ok' | 'skip' | null = st === 5 ? 'skip' : st >= 2 ? 'ok' : null;
+  if (now && sent.get(p.slot) !== now) {
+    sent.set(p.slot, now);
+    const b = ourBlocks.find((x) => x.s === p.slot);
+    if (b) { b.tx = tx; b.skip = now === 'skip'; }
+    else { ourBlocks.unshift({ s: p.slot, tx, skip: now === 'skip' }); ourBlocks.length = Math.min(ourBlocks.length, 16); }
     const fee = BigInt(p.transaction_fee ?? 0) + BigInt(p.priority_fee ?? 0) + BigInt(p.tips ?? 0);
-    broadcast({ t: 'slot', s: p.slot, i: m.i, st, tx: (p.success_transaction_cnt ?? 0) + (p.failed_transaction_cnt ?? 0), fee: Number(fee) });
-    if (m.i === 3) setTimeout(() => broadcast(info()), 400); // the next window's countdown, right away
+    broadcast({ t: 'slot', s: p.slot, i: p.slot % 4, st: now, tx, fee: Number(fee) });
+    if (p.slot % 4 === 3) setTimeout(() => broadcast(info()), 400); // the next countdown, right away
   }
 }
 
 function onPeers(v: any) {
   for (const p of [...(v.add ?? []), ...(v.update ?? [])]) {
-    if ((p.identity_pubkey ?? p.identity) !== IDENTITY) continue;
-    const vote = (p.vote ?? [])[0] ?? {};
-    peer = { name: p.info?.name ?? peer.name, stake: vote.activated_stake, commission: vote.commission,
-             lastVote: vote.last_vote, delinquent: vote.delinquent };
+    const id = p.identity_pubkey ?? p.identity;
+    if (id && p.info?.name) names.set(id, p.info.name);
   }
 }
 
 // The GUI's peers topic leaves commission and last vote at 0: read them from RPC.
+let vote: { bps: number; stake: bigint; delinquent: boolean } | null = null;
 async function readVote() {
   try {
     const r = await fetch(RPC_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getVoteAccounts', params: [{ votePubkey: VOTE }] }) });
     const res = (await r.json()).result;
     const v = res.current[0] ?? res.delinquent[0];
-    if (!v) return;
-    vote = { bps: v.inflationRewardsCommissionBps ?? v.commission * 100, stake: BigInt(v.activatedStake),
-             delinquent: res.delinquent.length > 0 };
+    if (v) vote = { bps: v.inflationRewardsCommissionBps ?? v.commission * 100, stake: BigInt(v.activatedStake),
+                    delinquent: res.delinquent.length > 0 };
   } catch (e) { console.log('rpc:', String(e)); }
 }
-let vote: { bps: number; stake: bigint; delinquent: boolean } | null = null;
 readVote();
 setInterval(readVote, 5 * MINUTE);
 
+// ---------------------------------------------------------------- what badges get
+function frame() {
+  const cur = est - (est % 4);
+  const rows = [];
+  for (let w = cur + 8; w >= cur - 8; w -= 4) {            // 2 next, current, 2 before
+    let cells = '', tx = 0;
+    const per: number[] = [];                              // ok, fail for each of the 4 slots
+    for (let s = w; s < w + 4; s++) {
+      const x = slots.get(s);
+      cells += x ? x.st : s <= est ? 1 : 0;
+      tx += x ? x.ok + x.fail : 0;
+      per.push(x?.ok ?? 0, x?.fail ?? 0);
+    }
+    const id = leaderOf(w);
+    rows.push([w, nameOf(id), id === IDENTITY ? 1 : 0, cells, tx, per]);
+  }
+  return { t: 'f', e: est, ok: Math.round(tpsOk), fail: Math.round(tpsFail), r: rows };
+}
+
 function info() {
-  const e = [...epochs.values()].find((x) => est >= x.start && est <= x.end);
+  const e = epochOf(est);
   const all = e ? e.windows : [];
   const past = all.filter((w) => w + 3 <= root).length * 4;
   let skips = 0;
   for (const s of skipped) if (e && s >= e.start && s <= e.end) skips++;
-  const next = [...epochs.values()].flatMap((x) => x.windows).filter((w) => w + 3 >= est).sort((a, b) => a - b)[0];
-  const stake = vote?.stake ?? (peer.stake ? BigInt(peer.stake) : e?.stake ?? 0n);
+  const upcoming = [...epochs.values()].flatMap((x) => x.windows).filter((w) => w + 3 >= est).sort((a, b) => a - b).slice(0, 24);
+  const stake = vote?.stake ?? e?.stake ?? 0n;
   return {
     t: 'info',
-    name: peer.name ?? 'Galaxy',
+    name: nameOf(IDENTITY),
     stake: Number(stake / LAMPORTS),                         // SOL, fits a badge's 32-bit integers
-    share: e && e.total > 0n ? Number((stake * 100000n) / e.total) / 1000 : 0,  // % of all stake
+    share: e && e.total > 0n ? Number((stake * 100000n) / e.total) / 1000 : 0,
     rank: e?.rank ?? 0,
-    comm: vote ? vote.bps / 100 : null,                      // %
-    delinq: vote?.delinquent ?? peer.delinquent ?? false,
+    comm: vote ? vote.bps / 100 : null,
+    delinq: vote?.delinquent ?? false,
     epoch: e?.epoch ?? 0,
     pct: e ? Math.floor(((est - e.start) * 100) / (e.end - e.start + 1)) : 0,
     slot: est,
-    leader: all.length * 4,                                  // leader slots this epoch
-    done: past - skips,                                      // produced so far (rooted)
+    sd: Math.round(slotNs / 1e6),                            // ms per slot
+    leader: all.length * 4,
+    done: past - skips,
     skip: skips,
-    next: next ?? null,                                      // next (or current) window's first slot
-    nextIn: next ? Math.max(0, Math.round(((next - est) * slotNs) / 1e8) / 10) : null, // seconds
+    next: upcoming,                                          // our next window starts (the first may be under way)
+    last: ourBlocks.map((b) => [b.tx, b.skip ? 1 : 0]),      // our last 16 slots, newest first
     up: upstream,
   };
 }
@@ -146,10 +194,11 @@ function connect() {
       if (key === 'estimated_slot') est = value;
       else if (key === 'root_slot') root = value;
       else if (key === 'estimated_slot_duration_nanos') slotNs = value;
+      else if (key === 'estimated_tps') { tpsOk = value.success ?? 0; tpsFail = value.failed ?? 0; }
     } else if (topic === 'epoch' && key === 'new') onEpoch(value);
     else if (topic === 'peers' && key === 'update') onPeers(value);
     else if (topic === 'slot' && key === 'skipped_history_cluster') {
-      for (const s of value as number[]) if (mine.has(s)) skipped.add(s);
+      for (const s of value as number[]) if (isOurs(s)) skipped.add(s);
     }
   };
   ws.onclose = () => {
@@ -161,6 +210,9 @@ function connect() {
   ws.onerror = () => {};
 }
 connect();
+
+// forget old slots
+setInterval(() => { for (const s of slots.keys()) if (s < est - 400) slots.delete(s); }, 10_000);
 
 // ---------------------------------------------------------------- badge ticket (LUA_API.md "ws")
 const keys = new Map<string, CryptoKey>();
@@ -208,13 +260,21 @@ function broadcast(m: object) {
   const s = JSON.stringify(m);
   for (const c of clients) c.send(s);
 }
-setInterval(() => broadcast(info()), 5000);
+let lastFrame = '';
+setInterval(() => {
+  if (!clients.size || !est) return;
+  const s = JSON.stringify(frame());
+  if (s === lastFrame) return;                 // nothing moved
+  lastFrame = s;
+  for (const c of clients) c.send(s);
+}, FRAME_MS);
+setInterval(() => broadcast(info()), 2000);
 
 Bun.serve<{ badge: string }>({
   port: Number(process.env.PORT ?? 8080),
   async fetch(req, server) {
     const u = new URL(req.url);
-    if (u.pathname === '/status') return Response.json(info());
+    if (u.pathname === '/status') return Response.json({ info: info(), frame: frame() });
     if (u.pathname === '/live') {
       const who = DEV ? { badge: 'dev', user: 'dev' } : await fromBadgeSocket(PUBLIC_URL + u.pathname + u.search);
       if (who && server.upgrade(req, { data: { badge: who.badge } })) return undefined;
@@ -223,9 +283,9 @@ Bun.serve<{ badge: string }>({
     return new Response('Galaxy Live relay', { status: 404 });
   },
   websocket: {
-    open(ws) { clients.add(ws); ws.send(JSON.stringify(info())); },
+    open(ws) { clients.add(ws); ws.send(JSON.stringify(info())); if (est) ws.send(JSON.stringify(frame())); },
     close(ws) { clients.delete(ws); },
     message() {},
   },
 });
-console.log(`relay for ${IDENTITY} on :${process.env.PORT ?? 8080}, upstream ${FD_WS}`);
+console.log(`relay for ${IDENTITY} on :${process.env.PORT ?? 8080}, upstream ${FD_WS}, frames every ${FRAME_MS} ms`);
