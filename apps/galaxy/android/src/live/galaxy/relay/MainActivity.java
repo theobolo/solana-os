@@ -5,7 +5,10 @@ import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothManager;
 import android.content.Intent;
+import android.app.PendingIntent;
 import android.content.pm.PackageManager;
+import android.hardware.usb.UsbDevice;
+import android.hardware.usb.UsbManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -21,13 +24,17 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import java.util.ArrayList;
 import java.util.List;
 
 /** One screen: start or stop the relay, let it run in the background, see how it goes. */
 public class MainActivity extends Activity {
-    private TextView status;
+    private TextView status, installLog;
+    private ProgressBar installBar;
+    private Button installBtn;
+    private volatile boolean installing;
     private final Handler ui = new Handler(Looper.getMainLooper());
 
     @Override
@@ -44,10 +51,24 @@ public class MainActivity extends Activity {
         col.addView(bar, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(4)));
 
         col.addView(text("Galaxy Live", 28, Color.WHITE, true), margins(0, dp(16), 0, dp(4)));
-        col.addView(text("Envoie les slots de Galaxy au badge en Bluetooth, même quand tu utilises une autre app. "
-                + "Ouvre l'app Galaxy Live sur le badge, puis démarre le relais.", 15, 0xFF8E8C9E, false), margins(0, 0, 0, dp(16)));
+        col.addView(text("Installe l'app sur le badge en USB, puis envoie-lui les slots de Galaxy en Bluetooth, "
+                + "même quand tu utilises une autre app.", 15, 0xFF8E8C9E, false), margins(0, 0, 0, dp(16)));
 
-        col.addView(button("Démarrer le relais", true, v -> start()), margins(0, dp(6), 0, dp(6)));
+        col.addView(text("1. Installer sur le badge (USB)", 18, Color.WHITE, true), margins(0, dp(8), 0, dp(2)));
+        col.addView(text("Badge branché au téléphone en USB-C, microSD en place.", 14, 0xFF8E8C9E, false));
+        installBtn = button("Installer l'app sur le badge", true, v -> install());
+        col.addView(installBtn, margins(0, dp(10), 0, dp(6)));
+        installBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        installBar.setMax(1000);
+        installBar.setVisibility(View.GONE);
+        col.addView(installBar, margins(0, dp(4), 0, dp(4)));
+        installLog = text("", 13, 0xFF8E8C9E, false);
+        installLog.setTypeface(Typeface.MONOSPACE);
+        col.addView(installLog, margins(0, 0, 0, dp(12)));
+
+        col.addView(text("2. Relais en direct (Bluetooth)", 18, Color.WHITE, true), margins(0, dp(8), 0, dp(2)));
+        col.addView(text("L'app Galaxy Live ouverte sur le badge.", 14, 0xFF8E8C9E, false));
+        col.addView(button("Démarrer le relais", true, v -> start()), margins(0, dp(10), 0, dp(6)));
         col.addView(button("Arrêter", false, v -> stopService(new Intent(this, RelayService.class))), margins(0, dp(6), 0, dp(6)));
         col.addView(button("Ne pas couper en arrière-plan (batterie)", false, v -> battery()), margins(0, dp(6), 0, dp(16)));
 
@@ -75,6 +96,59 @@ public class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() { ui.removeCallbacksAndMessages(null); super.onDestroy(); }
+
+    // ------------------------------------------------------------------ installing on the badge (USB)
+
+    private void ilog(String s, int kind) {
+        ui.post(() -> {
+            String mark = kind == 1 ? "✓ " : kind == 2 ? "✗ " : "· ";
+            installLog.append(mark + s + "\n");
+            if (kind == 2) installLog.setTextColor(0xFFEB54BC);
+        });
+    }
+
+    private void install() {
+        if (installing) return;
+        UsbManager um = getSystemService(UsbManager.class);
+        UsbDevice dev = null;
+        for (UsbDevice d : um.getDeviceList().values()) if (d.getVendorId() == Ch340.VENDOR) dev = d;
+        installLog.setText("");
+        installLog.setTextColor(0xFF8E8C9E);
+        if (dev == null) { ilog("Badge introuvable en USB : branche-le au téléphone (USB-C, adaptateur OTG si besoin).", 2); return; }
+        if (!um.hasPermission(dev)) {
+            Intent i = new Intent("live.galaxy.relay.USB").setPackage(getPackageName());
+            um.requestPermission(dev, PendingIntent.getBroadcast(this, 0, i, Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0));
+            ilog("Autorise l'accès au badge dans la fenêtre d'Android…", 0);
+        }
+        installing = true;
+        installBtn.setEnabled(false);
+        installBtn.setAlpha(0.5f);
+        installBar.setProgress(0);
+        installBar.setVisibility(View.VISIBLE);
+        final UsbDevice badge = dev;
+        new Thread(() -> {
+            Ch340 port = null;
+            try {
+                for (int i = 0; i < 200 && !um.hasPermission(badge); i++) Thread.sleep(300);   // up to a minute to answer
+                if (!um.hasPermission(badge)) throw new Installer.Failed("accès USB refusé", true);
+                Installer[] ins = new Installer[1];
+                port = new Ch340(um, badge);
+                ins[0] = new Installer(port, new Installer.Log() {
+                    @Override public void line(String s, int kind) { ilog(s, kind); }
+                    @Override public void progress(double p) { ui.post(() -> installBar.setProgress((int) (p * 1000))); }
+                });
+                port.start(ins[0]);
+                ins[0].run(Config.HOST);
+                ui.post(() -> installBar.setProgress(1000));
+                ilog("Passe à l'étape 2 : démarre le relais.", 1);
+            } catch (Exception e) {
+                ilog("Erreur : " + e.getMessage(), 2);
+            } finally {
+                if (port != null) port.close();
+                ui.post(() -> { installing = false; installBtn.setEnabled(true); installBtn.setAlpha(1f); });
+            }
+        }, "install").start();
+    }
 
     // ------------------------------------------------------------------ starting
 

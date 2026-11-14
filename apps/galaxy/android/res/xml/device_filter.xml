@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The badge's USB-serial chip, a WCH CH340 (vendor 0x1a86): plugging the badge in offers to open
+     Galaxy Live, and that grants the app access to it. -->
+<resources>
+    <usb-device vendor-id="6790" />
+</resources>
