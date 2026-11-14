@@ -22,9 +22,17 @@ interface Env {
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
-    const path = new URL(req.url).pathname;
-    if (path === '/live' || path === '/status') return env.RELAY.get(env.RELAY.idFromName('relay')).fetch(req);
-    return new Response('Galaxy Live relay', { status: 404 });
+    const u = new URL(req.url);
+    if (u.pathname !== '/live' && u.pathname !== '/status') return new Response('Galaxy Live relay', { status: 404 });
+    if (u.pathname === '/live') {
+      // The ticket is checked here, not in the object: this code always runs with the
+      // latest settings, while an object that is busy keeps the ones it started with.
+      if (req.headers.get('Upgrade') !== 'websocket') return new Response('a WebSocket, please', { status: 426 });
+      const who = env.DEV_NO_TICKET === '1' ? { badge: 'dev', user: 'dev' }
+        : await fromBadgeSocket(req.url, env.APP, u.host, env.BADGE_SERVER);
+      if (!who) return new Response('no', { status: 403 });
+    }
+    return env.RELAY.get(env.RELAY.idFromName('relay')).fetch(req);
   },
 };
 
@@ -44,6 +52,7 @@ export class RelayDO {
   private fresh() {
     const r = new Relay(this.env.IDENTITY, (m) => this.broadcast(m), (fn, ms) => setTimeout(fn, ms), console.log);
     r.upstream = 'idle';
+    r.vote = this.relay?.vote ?? null;       // keep what we know of the vote account
     return r;
   }
 
@@ -103,13 +112,10 @@ export class RelayDO {
   async fetch(req: Request): Promise<Response> {
     const u = new URL(req.url);
     if (u.pathname === '/status') {
+      if (!this.relay.vote) await this.relay.readVote(this.env.RPC_URL, this.env.VOTE);
       return Response.json({ badges: this.clients.size, info: this.relay.info(), frame: this.relay.est ? this.relay.frame() : null });
     }
-    if (req.headers.get('Upgrade') !== 'websocket') return new Response('a WebSocket, please', { status: 426 });
-    const who = this.env.DEV_NO_TICKET === '1' ? { badge: 'dev', user: 'dev' }
-      : await fromBadgeSocket(req.url, this.env.APP, u.host, this.env.BADGE_SERVER);
-    if (!who) return new Response('no', { status: 403 });
-
+    // /live: the Worker above has checked the badge's ticket.
     const [client, server] = Object.values(new WebSocketPair());
     server.accept();
     this.clients.add(server);

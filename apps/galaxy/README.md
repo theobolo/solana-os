@@ -28,7 +28,7 @@ Ces images viennent d'une prévisualisation, pas du badge lui-même. Le vrai `ma
 - **Les 2 du côté** : elles respirent de plus en plus vite pendant les 10 secondes qui précèdent la fenêtre suivante. En mode « full », elles clignotent aussi à chaque slot du cluster.
 - **SELECT** fait défiler les modes : full, Galaxy seulement, éteint.
 
-## Le relais (`server.ts`)
+## Le relais
 
 Le badge ne peut pas se brancher directement sur le dashboard Firedancer de Staking Facilities (`wss://fd-mainnet.stakingfacilities.com/websocket`) :
 
@@ -44,31 +44,46 @@ Au total, cela fait environ 3 Ko/s vers le badge. La commission, le stake exact 
 
 ## Mise en route
 
-1. **Héberger le relais** derrière HTTPS sur le port 443, à un nom de domaine à toi. Le badge n'ouvre que du `wss://` sur le port 443. Un petit VPS avec Caddy, Fly.io ou un tunnel Cloudflare suffit.
+Le relais est déjà déployé sur Cloudflare Workers, à `https://galaxy-live-relay.theo-b59.workers.dev`. `main.lua` et `app.json` pointent dessus.
 
-   ```sh
-   PUBLIC_URL=https://galaxy.ton-domaine.xyz PORT=8080 bun server.ts
-   ```
+**Installer l'app** : va sur `/apps/submit` du site du badge et dépose `dist/galaxy-live.zip` (il ne contient que `main.lua` et `app.json`). Clique ensuite sur **Run on badge** (Chrome ou Edge sur ordinateur, badge en USB-C) : ça ouvre un test run de 12 h. Pour la garder, publie-la.
 
-   Variables disponibles :
-   - `FD_WS` : l'adresse du dashboard ;
-   - `IDENTITY` et `VOTE` : les clés du validateur (Galaxy par défaut) ;
-   - `RPC_URL` : le RPC utilisé ;
-   - `APP` : l'identifiant de l'app (`galaxy-live` par défaut) ;
-   - `FRAME_MS` : l'intervalle entre deux images (100 par défaut).
+Si tu modifies `main.lua` ou `app.json`, refais le zip :
 
-   `GET /status` renvoie l'état courant en JSON, pratique pour vérifier que tout tourne.
+```sh
+cd apps/galaxy && zip -j dist/galaxy-live.zip main.lua app.json
+```
 
-2. **Mettre ton domaine** dans `main.lua` (la variable `RELAY`) et dans `app.json` (le champ `hosts`).
+### Le relais sur Cloudflare (`worker/`)
 
-3. **Installer l'app** : va sur `/apps/submit`, puis envoie seulement `main.lua` et `app.json`. Le reste du dossier partirait dans l'app comme fichiers embarqués. Clique ensuite sur **Run on badge** : ça ouvre un test run de 12 h. Pour la garder, publie-la.
+- Un Durable Object tient le websocket vers le dashboard Firedancer et ceux des badges.
+- Il ne suit le flux que lorsqu'un badge est connecté, et s'arrête 30 s après le départ du dernier. Le premier badge attend une ou deux secondes le leader schedule.
+- `GET /status` renvoie l'état courant en JSON.
+- Le Worker vérifie le ticket signé que le badge envoie à l'ouverture du websocket : seule l'app `galaxy-live` peut se connecter (403 sinon).
+- Les réglages sont les `[vars]` de `worker/wrangler.toml` : `FD_WS`, `IDENTITY`, `VOTE`, `RPC_URL`, `APP`, `FRAME_MS`.
 
-Le relais vérifie le ticket signé que le badge envoie à l'ouverture du websocket, avec le même code que l'exemple officiel `wifi-room`. `DEV_NO_TICKET=1` désactive cette vérification, pour les tests en local uniquement.
+Pour redéployer après une modification :
+
+```sh
+cd apps/galaxy/worker && npx wrangler deploy
+```
+
+### Le relais ailleurs (`server.ts`)
+
+Le même relais tourne avec Bun, derrière HTTPS sur le port 443 :
+
+```sh
+PUBLIC_URL=https://galaxy.ton-domaine.xyz PORT=8080 bun server.ts
+```
+
+Il prend les mêmes réglages en variables d'environnement. `DEV_NO_TICKET=1` désactive la vérification du ticket, pour les tests en local uniquement.
 
 ## Testé
 
-- **Le relais** a tourné contre le vrai flux Firedancer. Il trouve le leader schedule de Galaxy : 6 920 slots par epoch, comme `getLeaderSchedule`.
-- **L'app** a tourné dans la prévisualisation, branchée sur ce relais, pendant une vraie fenêtre de Galaxy (slots 469 352 188 à 469 352 191). Toutes les captures viennent de ce test.
+- **Le relais sur Cloudflare** : l'app, dans la prévisualisation, s'y est connectée et a reçu le flux en direct. Sans ticket de badge, il refuse la connexion (403).
+- **Le leader schedule** : le relais trouve 6 920 slots pour Galaxy sur l'epoch, comme `getLeaderSchedule`.
+- **L'app** a tourné dans la prévisualisation pendant de vraies fenêtres de Galaxy (par exemple les slots 469 352 188 à 469 352 191). Toutes les captures viennent de là.
   - Au pire, une callback a coûté 32 000 instructions, pour une limite de 200 000 sur le badge.
   - Aucun message n'a dépassé 4 Ko.
-- **Pas encore testé** sur un vrai badge. La fluidité réelle dépendra de la vitesse de l'écran SPI. Le carrousel est redessiné à chaque tick (30 ms) et l'histogramme un tick sur deux. Si ça rame, augmente ces intervalles dans `on_tick`.
+- **Pas encore testé** sur un vrai badge : ni le ticket signé par le serveur du badge, ni la fluidité sur l'écran SPI. Le carrousel est redessiné à chaque tick (30 ms) et l'histogramme un tick sur deux. Si ça rame, augmente ces intervalles dans `on_tick`.
+- Depuis Cloudflare, le RPC public Solana ne répond pas. La commission et le stake viennent alors de Stakewiz.

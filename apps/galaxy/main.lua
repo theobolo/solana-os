@@ -22,7 +22,7 @@
 --
 -- Data: one WebSocket to your relay (server.ts), about 10 messages a second.
 
-local RELAY = "wss://galaxy.example.com/live"   -- your relay; its host goes in app.json "hosts"
+local RELAY = "wss://galaxy-live-relay.theo-b59.workers.dev/live"   -- your relay; its host goes in app.json "hosts"
 local OWNER = "ghosty"
 
 ---------------------------------------------------------------------------------

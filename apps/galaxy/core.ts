@@ -159,16 +159,26 @@ export class Relay {
   /** Forget slots the carousel no longer shows. Call now and then. */
   prune() { for (const s of this.slots.keys()) if (s < this.est - 400) this.slots.delete(s); }
 
-  /** Commission, stake and delinquency from RPC: the GUI's peers topic leaves them at 0. */
+  /** Commission, stake and delinquency: the GUI's peers topic leaves them at 0. From RPC
+   *  (getVoteAccounts), else from Stakewiz: public RPC nodes refuse some clouds' addresses. */
   async readVote(rpcUrl: string, votePubkey: string) {
     try {
       const r = await fetch(rpcUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getVoteAccounts', params: [{ votePubkey }] }) });
       const res = ((await r.json()) as any).result;
       const v = res.current[0] ?? res.delinquent[0];
-      if (v) this.vote = { bps: v.inflationRewardsCommissionBps ?? v.commission * 100, stake: BigInt(v.activatedStake),
-                           delinquent: res.delinquent.length > 0 };
+      if (v) {
+        this.vote = { bps: v.inflationRewardsCommissionBps ?? v.commission * 100, stake: BigInt(v.activatedStake),
+                      delinquent: res.delinquent.length > 0 };
+        return;
+      }
     } catch (e) { this.log('rpc: ' + String(e)); }
+    try {
+      const v = (await (await fetch(`https://api.stakewiz.com/validator/${votePubkey}`)).json()) as any;
+      if (typeof v.commission === 'number' && typeof v.activated_stake === 'number') {
+        this.vote = { bps: v.commission, stake: BigInt(Math.round(v.activated_stake * 1e6)) * 1000n, delinquent: v.delinquent === true };
+      }
+    } catch (e) { this.log('stakewiz: ' + String(e)); }
   }
 }
 

@@ -8,5 +8,5 @@
   "accent": "9945FF",
   "category": "tools",
   "permissions": ["http", "led"],
-  "hosts": ["galaxy.example.com"]
+  "hosts": ["galaxy-live-relay.theo-b59.workers.dev"]
 }
