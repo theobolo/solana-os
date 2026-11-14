@@ -30,7 +30,8 @@ Le leader schedule, sur le modèle de celui du dashboard Firedancer ([animation]
   - une icône de statut : cercle vide pour un slot à venir, roue qui tourne pendant la production, cercle pour completed, coche foncée pour notarized, coche turquoise pour rooted, croix rose pour skipped ;
   - les transactions, les frais (frais de base et prioritaires, en SOL), les tips, la durée (ms) et le compute utilisé (% du maximum).
 - **Les en-têtes de colonnes** reprennent les couleurs du dashboard, et une barre à gauche rappelle sa colonne « Upcoming / Now / Past ».
-- **Le défilement** : la liste glisse vers le bas à chaque nouveau leader. HAUT et BAS parcourent les 8 dernières fenêtres, carte par carte ; revenu en haut, la liste suit de nouveau le direct.
+- **Le défilement** : la liste glisse vers le bas à chaque nouveau leader.
+- **La navigation** ([animation](preview/navigation.gif)) : HAUT et BAS sélectionnent un slot, un par un, dans les 8 dernières fenêtres (BAS remonte le temps). Le slot est surligné, sa carte calée en haut de la liste, et un panneau en bas l'affiche en grand : statut, transactions, frais et tips en SOL (6 décimales), durée, compute. La liste ne bouge plus tant qu'un slot est sélectionné. HAUT après le slot le plus récent, ou RETOUR, revient au direct.
 
 Les tableaux viennent des messages `w` du relais (voir `core.ts`) : une fenêtre complète, envoyée à chaque changement, compactée sur 84 octets pour le Bluetooth.
 

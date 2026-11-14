@@ -193,8 +193,8 @@ end
 -- SCHEDULE view, after the Firedancer dashboard's leader schedule: the next leaders
 -- on top, the current one in a teal frame, then the past ones, newest first, each with
 -- its four slots (state, transactions, fees, tips, time, compute used). The list slides
--- down as each leader takes over; UP / DOWN scroll through the past ones, and back at
--- the top it follows live again. Graphics go on one canvas (it clips what scrolls
+-- down as each leader takes over. UP / DOWN pick a slot, one at a time, and a panel at
+-- the bottom shows it in full; UP past the newest slot, or BACK, follows live again. Graphics go on one canvas (it clips what scrolls
 -- out); text is labels, a column of four lines each, aligned like the dashboard's.
 
 local FD_CARD, FD_BORDER, FD_NOW, FD_NOWBG = 0x121821, 0x252B35, 0x1FC9A9, 0x0D2126
@@ -231,6 +231,27 @@ V("schedule", ui.rect(0, 24, 320, LIST_Y - 24, { color = "bg" }))   -- what scro
 for _, col in ipairs(COLS) do
   V("schedule", ui.label(col[1], 27, col[4], { size = 12, color = col[5], w = col[2], align = col[3] }))
 end
+
+-- The selected slot in full (UP / DOWN pick one), over the bottom of the list
+local PANEL_H = 50
+local PANEL_Y = ui.H - PANEL_H
+local panel = {}
+local function P(o) panel[#panel + 1] = o return V("schedule", o) end
+P(R(3, PANEL_Y, 314, PANEL_H, { color = FD_NOW, radius = 6 }))
+P(R(4, PANEL_Y + 1, 312, PANEL_H - 2, { color = 0x0A161A, radius = 5 }))
+local pTitle = P(L(12, PANEL_Y + 4, "", { size = 12, color = FD_TEXT, w = 230 }))
+local pState = P(L(200, PANEL_Y + 4, "", { size = 12, color = FD_NOW, w = 108, align = "right" }))
+local PCOLS = {   -- x, width, title, title colour
+  { 12, 44, "TX", 0x61AD6D }, { 60, 74, "FEES SOL", 0x45B5CE }, { 138, 74, "TIPS SOL", 0x1ED4A1 },
+  { 216, 44, "MS", 0xB7B8B9 }, { 264, 44, "CU", 0xCE9BFC },
+}
+local pVal = {}
+for k, c in ipairs(PCOLS) do
+  P(L(c[1], PANEL_Y + 18, c[3], { size = 12, color = c[4], w = c[2] }))
+  pVal[k] = P(L(c[1], PANEL_Y + 30, "", { size = 14, color = "text", w = c[2] }))
+end
+local function showPanel(b) for _, o in ipairs(panel) do o:show(b) end end
+local STATE_NAME = { [0] = "upcoming", [1] = "in progress", [2] = "completed", [3] = "notarized", [4] = "rooted", [5] = "skipped" }
 
 -- Slot state icons, 9 x 9 pixel art: future, being made (8 turns), completed,
 -- notarized, rooted, skipped
@@ -435,6 +456,7 @@ local function cardText(w)       -- the six columns of a card, four lines each
 end
 
 local scroll, scrollTo, slideY = 0, 0, 0
+local sel = nil                  -- the selected slot (UP / DOWN), nil while following live
 local schedCur, lastSpin = nil, -1
 
 local function schedItems()      -- the list, top to bottom: {kind, row or record, y, h}
@@ -460,7 +482,7 @@ local function drawSchedule(now, live_s, p)
   if schedCur and cur ~= schedCur then           -- the next leader took over
     local k = (cur - schedCur) // 4
     if k > 0 and k < 4 then
-      if scrollTo == 0 then
+      if scrollTo == 0 and not sel then
         slideY = math.max(slideY - k * (CARD_H + GAP), -2 * (CARD_H + GAP))
       else                                       -- reading the past: keep it where it is
         scroll, scrollTo = scroll + k * (CARD_H + GAP), scrollTo + k * (CARD_H + GAP)
@@ -470,7 +492,25 @@ local function drawSchedule(now, live_s, p)
   end
   schedCur = cur
   local items, total = schedItems()
-  local maxS = math.max(0, total - LIST_H)
+  local maxS = math.max(0, total - LIST_H + (sel and PANEL_H or 0))
+  -- keep the selected slot in view, above the panel
+  local selIt, selJ = nil, nil
+  if sel then
+    local oldest = nil
+    for _, it in ipairs(items) do
+      if it.kind ~= "up" then
+        if sel >= it.w.s and sel <= it.w.s + 3 then selIt, selJ = it, sel - it.w.s end
+        oldest = it
+      end
+    end
+    if not selIt and oldest and sel < oldest.w.s then sel, selIt, selJ = oldest.w.s, oldest, 0 end   -- it fell off the list
+    if selIt then
+      -- the selected slot's card at the top (no card is ever cut there); the current
+      -- leader's card fits below the next leaders, so that one leaves them in view
+      scrollTo = selIt.kind == "now" and 0 or selIt.y - 2
+      if scrollTo > maxS then maxS = scrollTo end   -- even near the end of the list
+    end
+  end
   if scrollTo > maxS then scrollTo = maxS end
   local moving = false
   if slideY ~= 0 then
@@ -513,6 +553,11 @@ local function drawSchedule(now, live_s, p)
         sch:rect(8, y, 306, it.h, isNow and FD_NOW or (ours and PURPLE or FD_BORDER))
         sch:rect(9, y + 1, 304, it.h - 2, isNow and FD_NOWBG or (ours and OURS_BG or FD_CARD))
         if ours then for k = 0, 5 do sch:rect(9 + k * 51, y + 1, k == 5 and 49 or 51, 2, grad(k / 5)) end end
+        if it == selIt then
+          local ry = y + 20 + selJ * 13
+          sch:rect(9, ry, 304, 13, 0x22324A)
+          sch:rect(9, ry, 3, 13, FD_NOW)
+        end
         for j = 1, 4 do
           local st, s = w.d[j][1], w.s + j - 1
           local icon
@@ -544,6 +589,21 @@ local function drawSchedule(now, live_s, p)
     end
   end
   for i = upN + 1, #ups do ups[i].name:show(false) ups[i].when:show(false) end
+  showPanel(selIt ~= nil)
+  if selIt then
+    local w, j = selIt.w, selJ + 1
+    local x = w.d[j]
+    local done = x[1] >= 2 and x[1] ~= 5
+    pTitle:text(grouped(w.s + selJ) .. DOT .. w.n:sub(1, 18))
+    pTitle:color(w.o == 1 and "lime" or FD_TEXT)
+    pState:text(STATE_NAME[x[1]] or "")
+    pState:color(x[1] == 5 and "pink" or FD_NOW)
+    pVal[1]:text(done and grouped(x[2] or 0) or "-")
+    pVal[2]:text((done and x[3]) and string.format("%.6f", x[3] / 1000000000) or "-")
+    pVal[3]:text((done and x[4]) and string.format("%.6f", x[4] / 1000000000) or "-")
+    pVal[4]:text((done and (x[5] or 0) > 0) and tostring(x[5]) or "-")
+    pVal[5]:text((done and (x[6] or 0) > 0) and (x[6] .. "%") or "-")
+  end
   for i = used + 1, #pool do
     local c = pool[i]
     c.name:show(false) c.meta:show(false)
@@ -551,19 +611,28 @@ local function drawSchedule(now, live_s, p)
   end
 end
 
--- UP / DOWN in the schedule: from card to card
-local function schedScroll(dir)
+-- UP / DOWN in the schedule: slot by slot. DOWN goes back in time; UP comes forward,
+-- and past the newest slot made, back to following live. BACK lets go too.
+local function schedSelect(dir, live_s)
   local items = schedItems()
-  local best = nil
+  local newest, oldest = nil, nil
   for _, it in ipairs(items) do
     if it.kind ~= "up" then
-      local y = it.y - 2
-      if dir > 0 and y > scrollTo + 1 and (not best or y < best) then best = y end
-      if dir < 0 and y < scrollTo - 1 and (not best or y > best) then best = y end
+      local top = math.min(it.w.s + 3, live_s)
+      if top >= it.w.s and (not newest or top > newest) then newest = top end
+      if not oldest or it.w.s < oldest then oldest = it.w.s end
     end
   end
-  if dir < 0 and (not best or best <= UP_H * 2 + 4) then best = 0 end
-  if best then scrollTo = math.max(0, best) end
+  if not newest then return end
+  if not sel then
+    sel = newest
+  elseif dir > 0 then
+    if sel > oldest then sel = sel - 1 end
+  elseif sel >= newest then
+    sel, scrollTo = nil, 0
+  else
+    sel = sel + 1
+  end
   schedDirty = true
 end
 
@@ -904,7 +973,12 @@ end
 
 function on_key(key)
   if view == "schedule" and (key == "up" or key == "down") then
-    schedScroll(key == "down" and 1 or -1)
+    local p = live and phase(sys.millis()) or 0
+    schedSelect(key == "down" and 1 or -1, est + math.floor(p))
+    return true
+  end
+  if view == "schedule" and key == "back" and sel then
+    sel, scrollTo, schedDirty = nil, 0, true
     return true
   end
   if key == "left" or key == "right" then
@@ -912,6 +986,7 @@ function on_key(key)
     for n, v in ipairs(ORDER) do if v == view then i = n end end
     i = (i - 1 + (key == "right" and 1 or -1)) % #ORDER + 1
     showView(ORDER[i])
+    showPanel(view == "schedule" and sel ~= nil)
     -- what was drawn while hidden is stale: draw this view afresh
     for k = 1, 5 do cards[k].sig = nil end
     schedDirty, lastSpin = true, -1
