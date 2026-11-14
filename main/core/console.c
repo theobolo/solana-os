@@ -25,6 +25,7 @@
 #include "os_cmd.h"
 #include "os_http.h"
 #include "os_mem.h"
+#include "os_ws.h"
 
 static const char *TAG = "console";
 
@@ -354,6 +355,88 @@ int console_stream_read(void *buf, size_t n, int timeout_ms)
     return got < 0 ? -1 : got;
 }
 
+// fdbench [seconds]: can this badge keep up with a Firedancer dashboard's websocket?
+// It connects to gui.firedancer.io asking for zstd compression, reads everything and
+// throws it away, and says each second what came. The connection needs a task with
+// room for a TLS handshake, so it runs on its own; "cloud hangup" first frees the
+// badge server's connection if the heap is short.
+static volatile bool s_fdbench;
+
+static void fdbench_task(void *arg)
+{
+    int secs = (int)(intptr_t)arg;
+    printf("fdbench: connecting to gui.firedancer.io...\n");
+    int64_t t0 = esp_timer_get_time();
+    esp_err_t err = os_ws_connect("wss://gui.firedancer.io/websocket", "compress-zstd");
+    if (err != ESP_OK) {
+        printf("fdbench: no connection (%s)%s\n", esp_err_to_name(err),
+               err == ESP_ERR_NO_MEM ? ": try 'cloud hangup' first" : "");
+        s_fdbench = false;
+        vTaskDelete(NULL);
+    }
+    int64_t now = esp_timer_get_time();
+    printf("fdbench: open in %d ms, reading for %d s\n", (int)((now - t0) / 1000), secs);
+    int64_t tick = now, end = now + (int64_t)secs * 1000000;
+    size_t bytes = 0, biggest = 0;
+    uint32_t total_kb = 0;
+    int msgs = 0, zstd = 0, n = 0;
+    for (;;) {
+        char *m = NULL;
+        size_t len = 0;
+        int code = 0;
+        int r = os_ws_recv(&m, &len, 4u << 20, 200, &code);
+        if (r == OS_WS_MSG) {
+            msgs++;
+            bytes += len;
+            biggest = len > biggest ? len : biggest;
+            zstd += len >= 4 && (uint8_t)m[0] == 0x28 && (uint8_t)m[1] == 0xB5 && (uint8_t)m[2] == 0x2F && (uint8_t)m[3] == 0xFD;
+            free(m);
+        } else if (r != OS_WS_TIMEOUT) {
+            printf("fdbench: the connection ended (%d, close code %d)\n", r, code);
+            break;
+        }
+        now = esp_timer_get_time();
+        if (now - tick >= 1000000) {
+            printf("fdbench: %2d s  %4u KB/s  %4d msgs/s (%d zstd)  biggest %u KB  heap %u KB free, %u KB internal\n",
+                   ++n, (unsigned)(bytes / 1000), msgs, zstd, (unsigned)(biggest / 1000),
+                   (unsigned)(esp_get_free_heap_size() / 1024),
+                   (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
+            total_kb += bytes / 1000;
+            bytes = 0;
+            msgs = zstd = 0;
+            tick = now;
+        }
+        if (now >= end) {
+            break;
+        }
+    }
+    os_ws_close(1000);
+    printf("fdbench: done, %u KB in %d s (a desktop gets ~420 KB/s from this dashboard)\n", (unsigned)total_kb, n);
+    s_fdbench = false;
+    vTaskDelete(NULL);
+}
+
+static int cmd_fdbench(int argc, char **argv)
+{
+    if (s_fdbench) {
+        printf("fdbench is running\n");
+        return 1;
+    }
+    if (os_wifi_state() != OS_WIFI_CONNECTED) {
+        printf("fdbench: join Wi-Fi first\n");
+        return 1;
+    }
+    int secs = argc > 1 ? atoi(argv[1]) : 20;
+    secs = secs < 5 ? 5 : secs > 120 ? 120 : secs;
+    s_fdbench = true;
+    if (xTaskCreate(fdbench_task, "fdbench", 12 * 1024, (void *)(intptr_t)secs, 4, NULL) != pdPASS) {
+        s_fdbench = false;
+        printf("fdbench: no memory for its task\n");
+        return 1;
+    }
+    return 0;
+}
+
 static void start_now(void)
 {
     esp_console_repl_t *repl;
@@ -379,6 +462,7 @@ static void start_now(void)
         { .command = "cloud", .help = "cloud [hangup] - badge server link: state, badge ID, owner, claim URL; hangup closes the connection", .func = cmd_cloud },
         { .command = "shot", .help = "Dump a screenshot (decode with tools/badge.py)", .func = cmd_shot },
         { .command = "heap", .help = "heap [stacks] - heap usage, and the tasks' stack margins", .func = cmd_heap },
+        { .command = "fdbench", .help = "fdbench [seconds] - read a Firedancer dashboard's websocket and say how fast it comes", .func = cmd_fdbench },
         { .command = "reboot", .help = "Restart the badge", .func = cmd_reboot },
     };
     for (int i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
