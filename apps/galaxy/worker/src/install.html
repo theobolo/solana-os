@@ -40,7 +40,7 @@
 
   <section>
     <h2>2. Données en direct (Bluetooth)</h2>
-    <p>L'app ouverte sur le badge, choisis « Galaxy » dans la liste. Garde cette page ouverte : elle relaie les slots au badge.</p>
+    <p>L'app ouverte sur le badge, choisis « Galaxy » dans la liste. Cette page relaie les slots au badge. Elle continue en arrière-plan (notification « Galaxy Live ») : ne ferme pas l'onglet.</p>
     <button id="bridge">Connecter le badge</button>
     <p id="bstat" class="stat" hidden></p>
     <pre id="blog" hidden></pre>
@@ -189,6 +189,32 @@ $('install').onclick = async () => {
   }
 };
 
+// Android freezes a page in the background, and the badge stops getting data. A page that
+// plays sound is left running, so play a loop nobody can hear (50 Hz, a whisper of a
+// level): Android shows it as a "Galaxy Live" media notification.
+let quiet = null;
+function keepAlive(log) {
+  if (quiet) return;
+  const rate = 8000, n = rate, b = new Uint8Array(44 + n * 2), d = new DataView(b.buffer);
+  const w = (o, t) => { for (let i = 0; i < t.length; i++) b[o + i] = t.charCodeAt(i); };
+  w(0, 'RIFF'); d.setUint32(4, 36 + n * 2, true); w(8, 'WAVEfmt '); d.setUint32(16, 16, true);
+  d.setUint16(20, 1, true); d.setUint16(22, 1, true); d.setUint32(24, rate, true); d.setUint32(28, rate * 2, true);
+  d.setUint16(32, 2, true); d.setUint16(34, 16, true); w(36, 'data'); d.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) d.setInt16(44 + i * 2, Math.round(4 * Math.sin((2 * Math.PI * 50 * i) / rate)), true);
+  quiet = new Audio(URL.createObjectURL(new Blob([b], { type: 'audio/wav' })));
+  quiet.loop = true;
+  quiet.play().then(() => log("Mode arrière-plan actif : tu peux changer d'app.", 'ok'))
+    .catch(() => log("Mode arrière-plan refusé par le navigateur : garde la page ouverte.", 'err'));
+  if (navigator.mediaSession) {
+    navigator.mediaSession.metadata = new MediaMetadata({ title: 'Galaxy Live', artist: 'Relais vers le badge' });
+    // "pause" on the notification would freeze the page again: keep playing
+    navigator.mediaSession.setActionHandler('pause', () => quiet.play());
+  }
+  const lock = () => navigator.wakeLock?.request('screen').catch(() => {});
+  lock();
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { lock(); quiet.play().catch(() => {}); } });
+}
+
 // ---------------------------------------------------------------- 2. live data over Bluetooth
 const NUS = '6e400001-b5a3-f393-e0a9-e50e24dcca9e', RX = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
 $('bridge').onclick = async () => {
@@ -211,7 +237,7 @@ $('bridge').onclick = async () => {
       for (let i = 0; i < 20 && !rx; i++) { try { await link(); } catch { await new Promise((r) => setTimeout(r, 2000)); } }
     });
     await link();
-    try { await navigator.wakeLock?.request('screen'); } catch {}
+    keepAlive(log);
 
     // One write at a time; our slots first, then info, then only the newest frame.
     const pump = async () => {
