@@ -368,7 +368,7 @@ enum { FD_STORE, FD_DISCARD, FD_RAW };
 
 #if CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
 // Since the last call: the share of the CPU each task had (one core: they add up to
-// 100%), as "busy X%: the three busiest". The first call only takes the counters.
+// 100%), as "busy X%: the four busiest". The first call only takes the counters.
 static void fdbench_cpu(char *out, size_t n)
 {
     static TaskStatus_t was[40], now[40];
@@ -378,8 +378,8 @@ static void fdbench_cpu(char *out, size_t n)
     UBaseType_t k = uxTaskGetSystemState(now, 40, &t);
     out[0] = 0;
     if (nwas && t > twas) {
-        const char *name[3] = { 0 };
-        unsigned top[3] = { 0 };
+        const char *name[4] = { 0 };
+        unsigned top[4] = { 0 };
         unsigned idle = 0;
         for (UBaseType_t i = 0; i < k; i++) {
             configRUN_TIME_COUNTER_TYPE d = now[i].ulRunTimeCounter;
@@ -394,9 +394,9 @@ static void fdbench_cpu(char *out, size_t n)
                 idle += pct;
                 continue;
             }
-            for (int r = 0; r < 3; r++) {
+            for (int r = 0; r < 4; r++) {
                 if (pct > top[r]) {
-                    for (int q = 2; q > r; q--) {
+                    for (int q = 3; q > r; q--) {
                         top[q] = top[q - 1];
                         name[q] = name[q - 1];
                     }
@@ -406,8 +406,9 @@ static void fdbench_cpu(char *out, size_t n)
                 }
             }
         }
-        snprintf(out, n, "  cpu busy %u%%: %s %u%%, %s %u%%, %s %u%%", 100 - (idle > 100 ? 100 : idle),
-                 name[0] ? name[0] : "-", top[0], name[1] ? name[1] : "-", top[1], name[2] ? name[2] : "-", top[2]);
+        snprintf(out, n, "  cpu busy %u%%: %s %u%%, %s %u%%, %s %u%%, %s %u%%", 100 - (idle > 100 ? 100 : idle),
+                 name[0] ? name[0] : "-", top[0], name[1] ? name[1] : "-", top[1], name[2] ? name[2] : "-", top[2],
+                 name[3] ? name[3] : "-", top[3]);
     }
     memcpy(was, now, sizeof(TaskStatus_t) * k);
     nwas = k;
@@ -444,7 +445,7 @@ static void fdbench_task(void *arg)
     }
     int64_t now = esp_timer_get_time();
     printf("fdbench: open in %d ms, reading for %d s\n", (int)((now - t0) / 1000), secs);
-    char cpu[96];
+    char cpu[128];
     fdbench_cpu(cpu, sizeof(cpu));
     int64_t tick = now, end = now + (int64_t)secs * 1000000;
     size_t bytes = 0, biggest = 0;
@@ -550,6 +551,32 @@ static void fdbench_aes(void)
     psa_destroy_key(k);
 }
 
+// top [seconds]: each second, how busy the CPU was and its four busiest tasks, from a
+// task of its own so the console stays free (key, shot) meanwhile. Needs a build with
+// FreeRTOS run-time stats (sdkconfig.stats).
+static void top_task(void *arg)
+{
+    char cpu[128];
+    fdbench_cpu(cpu, sizeof(cpu));
+    for (int i = 0, n = (int)(intptr_t)arg; i < n; i++) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        fdbench_cpu(cpu, sizeof(cpu));
+        printf("top: %2d s%s\n", i + 1, cpu[0] ? cpu : "  (no run-time stats in this build)");
+    }
+    vTaskDelete(NULL);
+}
+
+static int cmd_top(int argc, char **argv)
+{
+    int secs = argc > 1 ? atoi(argv[1]) : 10;
+    secs = secs < 1 ? 1 : secs > 600 ? 600 : secs;
+    if (xTaskCreate(top_task, "top", 3 * 1024, (void *)(intptr_t)secs, 2, NULL) != pdPASS) {
+        printf("top: no memory for its task\n");
+        return 1;
+    }
+    return 0;
+}
+
 static int cmd_fdbench(int argc, char **argv)
 {
     if (s_fdbench) {
@@ -603,6 +630,7 @@ static void start_now(void)
         { .command = "shot", .help = "Dump a screenshot (decode with tools/badge.py)", .func = cmd_shot },
         { .command = "heap", .help = "heap [stacks] - heap usage, and the tasks' stack margins", .func = cmd_heap },
         { .command = "fdbench", .help = "fdbench [seconds] [store|discard|raw] | fdbench aes - read a Firedancer dashboard's websocket and say how fast it comes (discard: keep no message, raw: bytes only), or time its cipher", .func = cmd_fdbench },
+        { .command = "top", .help = "top [seconds] - each second, how busy the CPU was and its busiest tasks (needs run-time stats)", .func = cmd_top },
         { .command = "reboot", .help = "Restart the badge", .func = cmd_reboot },
     };
     for (int i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {

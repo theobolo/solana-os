@@ -1,0 +1,6 @@
+# Diagnostic build: the badge's firmware as it ships plus FreeRTOS run-time stats, for
+# the console's top (and fdbench's cpu column).
+#   idf.py -B build-stats -D SDKCONFIG=build-stats/sdkconfig \
+#     -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.stats" build
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y

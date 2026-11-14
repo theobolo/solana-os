@@ -84,6 +84,15 @@ cd ../worker && npx wrangler kv key put --binding FILES firedancer-gui.apk \
 
 ## Not yet tested on real hardware
 
+2026-11-14, Run on badge from /apps/submit (official 2.1.0, test run): the Wi-Fi path
+works (the badge's ws reaches the relay with its ticket, the relay counts it). But the
+app saturates the CPU: the task watchdog fires every 5 s (IDLE starved; `lua` and
+`taskLVGL` running), and the screen stutters. Next: flash the diagnostic build
+(`sdkconfig.stats`, console `top [seconds]` per-task CPU while `key` switches views),
+time on_tick's parts with sys.millis in a copy of main.lua (upload with `lua put`),
+and cut what each view redraws. A stray `my-app` (the editor's default) was installed
+by mistake: `lua rm my-app`.
+
 The Wi-Fi path (`ws` with the badge server's ticket: needs the store or a test run
 from `/apps/submit`, "Run on badge", desktop Chrome), and everything since the
 "optimization pass" and the Firedancer rebrand, were only run in the simulator.
