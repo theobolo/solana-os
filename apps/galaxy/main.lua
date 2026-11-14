@@ -562,7 +562,10 @@ function on_tick(ms)
     slide = slide * 0.55
     if slide < 0.5 then slide = 0 ghost = nil end
   end
-  if live and now - lastMsg > 3000 then live = false end
+  if live and now - lastMsg > 3000 then      -- nothing for 3 s: say so, don't just freeze
+    live = false
+    tpsL:text("no data")
+  end
   dotColor(live and mix(0x0A5A40, GREEN, (math.sin(now / 200) + 1) / 2) or 0xFF754A)
 
   -- countdown

@@ -251,11 +251,12 @@ $('bridge').onclick = async () => {
         }
       } finally { pumping = false; }
     };
-    let ws, got = 0;
+    let ws, got = 0, lastWs = Date.now();
     const open = () => {
       ws = new WebSocket(`wss://${location.host}/phone?k=${encodeURIComponent(key)}`);
-      ws.onopen = () => log('Relais connecté', 'ok');
+      ws.onopen = () => { lastWs = Date.now(); log('Relais connecté', 'ok'); };
       ws.onmessage = (ev) => {
+        lastWs = Date.now();
         let m; try { m = JSON.parse(ev.data); } catch { return; }
         const b = packMsg(m);
         if (!b) return;
@@ -267,8 +268,13 @@ $('bridge').onclick = async () => {
     };
     open();
     stat.hidden = false;
-    let last = 0;
-    setInterval(() => { stat.textContent = `${sent - last} messages/s vers le badge`; last = sent; }, 1000);
+    let last = 0, lastGot = 0;
+    setInterval(() => {
+      stat.textContent = `relais ${got - lastGot}/s → badge ${rx ? sent - last : 0}/s` + (rx ? '' : ' (Bluetooth coupé)');
+      last = sent; lastGot = got;
+      // a socket that went quiet without closing: start over
+      if (ws && ws.readyState === 1 && Date.now() - lastWs > 5000) { log('Relais muet, reconnexion…', 'err'); try { ws.close(); } catch {} }
+    }, 1000);
   } catch (e) {
     log('Erreur : ' + (e.message || e), 'err');
     btn.disabled = false;
