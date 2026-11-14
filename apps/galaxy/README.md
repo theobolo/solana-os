@@ -8,6 +8,8 @@ Ces images viennent d'une prévisualisation, pas du badge lui-même. Le vrai `ma
 
 ## Vue LIVE
 
+LEFT et RIGHT passent d'une vue à l'autre : LIVE, SCHEDULE, GALAXY.
+
 - **Carrousel de leaders** : cinq fenêtres leader, le passé à gauche et le futur à droite. La fenêtre en cours a un cadre vert.
   - Chaque carte affiche le validateur et ses 4 slots.
   - Le slot en cours se remplit pendant qu'il est produit (environ 200 ms en Alpenglow). Il passe ensuite au bleu (completed), au violet clair (notarized), puis au vert (rooted), ou au rose barré s'il est skippé.
@@ -15,7 +17,13 @@ Ces images viennent d'une prévisualisation, pas du badge lui-même. Le vrai `ma
 - **TX / SLOT** : une barre par slot du cluster, qui défile en continu au rythme des slots. Le vert représente les succès, le rose les échecs. Les slots de Galaxy sont en dégradé Solana sur fond violet. Le slot en cours entre par la droite.
 - **Panneau Galaxy** : le stake actif, le rang, la part du réseau, la commission, un anneau de progression de l'epoch et le compte à rebours jusqu'à la prochaine fenêtre. Le cadre pulse en rose pendant les 10 dernières secondes. Pendant la fenêtre, il affiche « LEADER NOW » avec les transactions et les frais au fil des slots.
 
-## Vue GALAXY (LEFT / RIGHT)
+## Vue SCHEDULE
+
+![Leader schedule](preview/schedule.png)
+
+Le leader schedule en tableau, comme sur le dashboard : les deux prochains leaders, le leader en cours, puis les six derniers. Chaque ligne donne les 4 slots, les transactions, les frais collectés (en SOL : frais, frais prioritaires et tips) et la durée moyenne d'un slot (en ms).
+
+## Vue GALAXY
 
 - Une frise des fenêtres leader de Galaxy sur les 10 prochaines minutes.
 - Un grand compte à rebours.

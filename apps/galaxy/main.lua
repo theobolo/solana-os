@@ -1,27 +1,33 @@
 -- Galaxy Live: the Solana cluster making blocks, live, with Galaxy front and centre.
--- A badge-sized take on the Firedancer dashboard.
+-- A badge-sized take on the Firedancer dashboard. LEFT / RIGHT change view.
 --
--- LIVE view
+-- LIVE
 --   Leader carousel: five leader windows, the past on the left, the future on the
 --   right, the current one framed in green. Each card shows the leader and its four
 --   slots: the slot being made fills up as it happens, then turns blue (completed),
 --   light purple (notarized) and green (rooted), or pink if skipped. The cards
 --   slide left when the next leader takes over. Galaxy's cards are purple.
---   TPS chart: successful and failed transactions a second, the last 16 s,
---   scrolling, shaded purple while Galaxy is leader.
+--   TX / SLOT: one bar per slot of the cluster, scrolling; Galaxy's in the gradient.
 --   Galaxy panel: active stake, rank, an epoch ring, the countdown to its next
 --   window; while it is leader, its transactions and fees as they come.
--- GALAXY view (LEFT / RIGHT)
+-- SCHEDULE
+--   The leader schedule as a table, like the dashboard's: the two next leaders, the
+--   current one, then the last six, each with its four slots, transactions, fees
+--   (SOL) and time per slot (ms).
+-- GALAXY
 --   Galaxy's next windows on a 10-minute timeline, a big countdown, and its last
 --   16 blocks as bars (transactions each).
 --
 -- LEDs: while Galaxy is leader the six top LEDs fill slot by slot (purple to
 -- green, red for a skip), then flash and fade. The side LEDs breathe as its next
 -- window comes and, in "full" mode, tick with every slot of the cluster.
--- Keys: LEFT/RIGHT view, SELECT LED mode (full / Galaxy / off), CANCEL exit.
+-- SELECT: LED mode (full / Galaxy / off). CANCEL: exit.
 --
 -- Data: the relay (server.ts or worker/), about 10 messages a second, over Wi-Fi
 -- (a WebSocket) or through a phone over Bluetooth (the relay's /install page).
+--
+-- Numbers: a badge has 32-bit integers and 32-bit floats. Slot numbers (469 million)
+-- stay integers; only differences between slots ever become floats.
 
 local RELAY = "wss://galaxy-live-relay.theo-b59.workers.dev/live"   -- your relay; its host goes in app.json "hosts"
 local OWNER = "ghosty"
@@ -33,6 +39,7 @@ local BG, PANEL, PANEL_HI, BORDER = 0x000000, 0x111116, 0x1C1B26, 0x2A2935
 local PURPLE, GREEN, PINK, LPURPLE, BLUE, AQUA, LIME = 0x9945FF, 0x14F195, 0xEB54BC, 0xB6B0FF, 0x64A8F2, 0x80ECFF, 0xACFF9B
 local OURS_BG = 0x221040
 local STATE = { [2] = BLUE, [3] = LPURPLE, [4] = GREEN, [5] = PINK }
+local DOT = " \u{2022} "         -- the badge's fonts have this bullet, not the middle dot
 
 local function mix(a, b, t)      -- blend two 0xRRGGBB colours, t in 0..1
   local function ch(s) return ((a >> s) & 255) + (((b >> s) & 255) - ((a >> s) & 255)) * t end
@@ -55,13 +62,19 @@ local function dur(sec)
   return string.format("%.1fs", sec)
 end
 
--- labels: set text / colour only when they change
+-- Objects that touch the screen only when something changes.
 local function L(x, y, text, o)
   local l = ui.label(x, y, text, o)
-  return { o = l, t = text, c = nil,
+  return { o = l, t = text,
     text = function(self, s) if self.t ~= s then self.o:text(s) self.t = s end end,
     color = function(self, c) if self.c ~= c then self.o:color(c) self.c = c end end,
     pos = function(self, px, py) if self.x ~= px or self.y ~= py then self.o:pos(px, py) self.x, self.y = px, py end end,
+    show = function(self, b) self.o:show(b) end }
+end
+local function R(x, y, w, h, o)
+  local r = ui.rect(x, y, w, h, o)
+  return { o = r,
+    color = function(self, c) if self.c ~= c then self.o:color(c) self.c = c end end,
     show = function(self, b) self.o:show(b) end }
 end
 
@@ -69,18 +82,35 @@ end
 -- State from the relay
 
 local info = nil
-local est, estAt, sd = 0, 0, 400 -- estimated slot, when we heard it, ms per slot
-local disp = {}                  -- carousel cards left to right: {s, name, ours, cells, tx}
-local ghost = nil                -- the card that just slid off on the left
+local est, sd = 0, 400           -- the relay's estimated slot, ms per slot
+local pbase, pat = 0, 0          -- our slot clock: slots past `est` at time `pat` (a small float)
+local disp = {}                  -- five windows, oldest first: {start, name, ours, cells, tx, per, fee, ms}
+local hist = {}                  -- past windows, newest first (for the schedule)
 local slide = 0                  -- px the carousel still has to slide
-local tpsOk, tpsFail = 0, 0
 local live = false
+local lastMsg, lastBle = -10000, -10000
 local win = { on = false, tx = 0, fee = 0, skip = false }   -- Galaxy's window in progress
 local blocks = {}                -- Galaxy's last 16 slots: {tx, skipped}
+local slotTx = {}                -- slot -> {ok, fail, ours, skipped}, for the chart
+local tickAt = -1000             -- when the cluster last moved to a new slot
 
-local function liveSlot(now)     -- the slot being made now, by our clock (at most one ahead)
-  local s = est + (now - estAt) // sd
-  return s > est + 1 and est + 1 or s
+-- The relay says which slot it is about ten times a second, over a link that
+-- delivers in bursts. Our own clock runs at the cluster's pace and is nudged
+-- toward the relay's, so what moves on screen moves steadily.
+local function phase(now)
+  local p = pbase + (now - pat) / sd
+  if p < 0 then p = 0 elseif p > 1.95 then p = 1.95 end
+  return p
+end
+local function newSlot(e, now)
+  if est == 0 or e < est or e - est > 8 then
+    pbase = 0
+  else
+    local p = pbase + (now - pat) / sd - (e - est)   -- where our clock puts us in the new slot
+    if p > 1.5 or p < -1.5 then p = 0 else p = p * 0.7 end
+    pbase = p
+  end
+  pat, est = now, e
 end
 
 ---------------------------------------------------------------------------------
@@ -89,58 +119,55 @@ end
 ui.bg("bg")
 ui.gradient(0, 0, ui.W, 2)
 ui.label(8, 4, "GALAXY", { size = 20 })
-local dotR = ui.rect(92, 12, 6, 6, { color = "dim", radius = 3 })
-local dotC = nil
-local function dotColor(c) if c ~= dotC then dotR:color(c) dotC = c end end
+local dot = R(92, 12, 6, 6, { color = "dim", radius = 3 })
 ui.label(103, 9, "@" .. OWNER, { size = 12, color = "aqua" })
 local tpsL = L(150, 3, "", { size = 20, w = 128, align = "right" })
 ui.label(282, 10, "TPS", { size = 12, color = "dim" })
 
+local views = { live = {}, schedule = {}, galaxy = {} }
+local ORDER = { "live", "schedule", "galaxy" }
+local function V(name, o) local t = views[name] t[#t + 1] = o return o end
+
 ---------------------------------------------------------------------------------
 -- LIVE view
 
-local liveObjs = {}
-local function V(o) liveObjs[#liveObjs + 1] = o return o end
-
--- leader carousel
-local CAR_Y, CAR_H, PITCH, CW, CH = 26, 74, 65, 60, 70
-local car = V(ui.canvas(0, CAR_Y, 320, CAR_H, { color = "bg" }))
-local names, txs = {}, {}
+-- Leader carousel: one small canvas per card, so the screen redraws only the cards
+-- that change (mostly the current one) instead of the whole strip.
+local CAR_Y, PITCH, CW, CH = 27, 65, 60, 72
+local cards = {}
 for k = 1, 5 do
-  names[k] = L(0, 0, "", { size = 12, color = "dim", w = CW - 6 })
-  txs[k] = L(0, 0, "", { size = 12, color = "dim", w = CW - 6 })
-  V(names[k]) V(txs[k])
+  local x = (k - 1) * PITCH
+  local c = { cv = V("live", ui.canvas(x, CAR_Y, CW, CH, { color = "bg" })), x = x }
+  c.name = V("live", L(x + 4, CAR_Y + 4, "", { size = 12, color = "dim", w = CW - 4 }))
+  c.tx = V("live", L(x + 4, CAR_Y + 46, "", { size = 12, color = "dim", w = CW - 4 }))
+  cards[k] = c
 end
 
 -- transactions per slot: one bar per slot, 5 px a slot, scrolling as slots are made
 local CHART_Y, CHART_H, SLOT_W = 104, 54, 5
-local chart = V(ui.canvas(0, CHART_Y, 320, CHART_H, { color = "bg" }))
-local slotTx = {}                -- slot -> {ok, fail, ours, skipped}
-local chartMax = 1000
-V(L(6, CHART_Y + 1, "TX / SLOT", { size = 12, color = "dim" }))
-local maxL = V(L(240, CHART_Y + 1, "", { size = 12, color = "dim", w = 74, align = "right" }))
+local chart = V("live", ui.canvas(0, CHART_Y, 320, CHART_H, { color = "bg" }))
+local chartMax, chartKey = 1000, nil
+V("live", L(6, CHART_Y + 1, "TX / SLOT", { size = 12, color = "dim" }))
+local maxL = V("live", L(240, CHART_Y + 1, "", { size = 12, color = "dim", w = 74, align = "right" }))
 
 -- Galaxy panel
 local PY = 162
-local frameR = V(ui.rect(3, PY - 1, 314, 56, { color = PURPLE, radius = 7 }))
-local frameC = PURPLE
-local function frameColor(c) if c ~= frameC then frameR:color(c) frameC = c end end
-V(ui.rect(4, PY, 312, 54, { color = "panel", radius = 6 }))
-V(ui.label(12, PY + 4, "ACTIVE STAKE", { size = 12, color = "dim" }))
-local stakeL = V(L(12, PY + 16, "-", { size = 20, color = "green" }))
-local subL = V(L(12, PY + 38, "", { size = 12, color = "dim", w = 124 }))
+local frame = V("live", R(3, PY - 1, 314, 56, { color = PURPLE, radius = 7 }))
+V("live", ui.rect(4, PY, 312, 54, { color = "panel", radius = 6 }))
+V("live", ui.label(12, PY + 4, "ACTIVE STAKE", { size = 12, color = "dim" }))
+local stakeL = V("live", L(12, PY + 16, "-", { size = 20, color = "green" }))
+local subL = V("live", L(12, PY + 38, "", { size = 12, color = "dim", w = 126 }))
 local RING = 44
-local ring = V(ui.canvas(140, PY + 5, RING, RING, { color = "panel" }))
-local pctL = V(L(140, PY + 15, "", { size = 12, w = RING, align = "center" }))
-local epL = V(L(140, PY + 27, "", { size = 12, color = "dim", w = RING, align = "center" }))
-local capL = V(L(194, PY + 4, "NEXT LEADER", { size = 12, color = "dim" }))
-local cdL = V(L(194, PY + 16, "", { size = 20, color = "lpurple", w = 118 }))
-local cdSub = V(L(194, PY + 38, "", { size = 12, color = "dim", w = 118 }))
+local ring = V("live", ui.canvas(142, PY + 5, RING, RING, { color = "panel" }))
+local pctL = V("live", L(142, PY + 20, "", { size = 12, w = RING, align = "center" }))
+local capL = V("live", L(196, PY + 4, "NEXT LEADER", { size = 12, color = "dim" }))
+local cdL = V("live", L(196, PY + 16, "", { size = 20, color = "lpurple", w = 116 }))
+local cdSub = V("live", L(196, PY + 38, "", { size = 12, color = "dim", w = 116 }))
 
 -- the ring's pixels, worked out once: {x, y, angle 0..1 from the top, clockwise}
 local ringPx = {}
 do
-  local c, r1, r2 = (RING - 1) / 2, 15.5, 21.5
+  local c, r1, r2 = (RING - 1) / 2, 16.5, 21.5
   for y = 0, RING - 1 do
     for x = 0, RING - 1 do
       local dx, dy = x - c, y - c
@@ -153,7 +180,10 @@ do
     end
   end
 end
+local ringPct = nil
 local function drawRing(pct)
+  if pct == ringPct then return end
+  ringPct = pct
   local t = pct / 100
   for _, p in ipairs(ringPx) do
     ring:pixel(p[1], p[2], p[3] <= t and grad(p[3]) or BORDER)
@@ -161,110 +191,134 @@ local function drawRing(pct)
 end
 
 ---------------------------------------------------------------------------------
+-- SCHEDULE view: 2 next leaders, the current one, the last 6
+
+local SROWS, SROW_Y, SROW_H = 9, 44, 19
+local STATS = "%5s %6s %4s"
+V("schedule", ui.label(8, 28, "LEADER", { size = 12, color = "lpurple" }))
+V("schedule", ui.label(100, 28, "SLOTS", { size = 12, color = "lpurple" }))
+V("schedule", ui.label(166, 28, string.format(STATS, "TX", "FEES", "MS"), { size = 12, color = "lpurple", w = 148, align = "right" }))
+V("schedule", ui.rect(2, SROW_Y + 2 * SROW_H - 3, 316, SROW_H, { color = PANEL_HI, radius = 4 }))   -- the current leader
+local srows = {}
+for r = 1, SROWS do
+  local y = SROW_Y + (r - 1) * SROW_H
+  srows[r] = {
+    name = V("schedule", L(8, y, "", { size = 12, color = "dim", w = 90 })),
+    cv = V("schedule", ui.canvas(100, y + 1, 58, 12)),
+    stat = V("schedule", L(166, y, "", { size = 12, color = "dim", w = 148, align = "right" })),
+  }
+end
+
+---------------------------------------------------------------------------------
 -- GALAXY view
 
-local galObjs = {}
-local function G(o) galObjs[#galObjs + 1] = o return o end
-G(ui.label(8, 28, "GALAXY LEADER WINDOWS  ·  NEXT 10 MIN", { size = 12, color = "lpurple" }))
+V("galaxy", ui.label(8, 28, "GALAXY LEADER WINDOWS" .. DOT .. "NEXT 10 MIN", { size = 12, color = "lpurple" }))
 local TL_Y = 44
-local tl = G(ui.canvas(0, TL_Y, 320, 40, { color = "bg" }))
+local tl = V("galaxy", ui.canvas(0, TL_Y, 320, 40, { color = "bg" }))
+local tlKey = nil
 for m = 0, 10, 2 do
-  G(ui.label(10 + m * 30 - 6, TL_Y + 42, m == 0 and "now" or (m .. "m"), { size = 12, color = "dim" }))
+  V("galaxy", ui.label(m == 10 and 290 or (10 + m * 30 - 6), TL_Y + 42, m == 0 and "now" or (m .. "m"), { size = 12, color = "dim" }))
 end
-G(ui.label(8, 104, "NEXT WINDOW", { size = 12, color = "dim" }))
-local gCd = G(L(8, 116, "", { size = 32, color = "lpurple", w = 200 }))
-local gSlot = G(L(170, 104, "", { size = 12, color = "dim", w = 142, align = "right" }))
-local gStats = G(L(170, 122, "", { size = 14, w = 142, align = "right" }))
-local gStats2 = G(L(170, 138, "", { size = 12, color = "dim", w = 142, align = "right" }))
-G(ui.label(8, 156, "LAST 16 BLOCKS  ·  TRANSACTIONS", { size = 12, color = "lpurple" }))
+V("galaxy", ui.label(8, 104, "NEXT WINDOW", { size = 12, color = "dim" }))
+local gCd = V("galaxy", L(8, 116, "", { size = 32, color = "lpurple", w = 180 }))
+local gSlot = V("galaxy", L(190, 104, "", { size = 12, color = "dim", w = 122, align = "right" }))
+local gStats = V("galaxy", L(190, 120, "", { size = 14, w = 122, align = "right" }))
+local gStats2 = V("galaxy", L(190, 138, "", { size = 12, color = "dim", w = 122, align = "right" }))
+V("galaxy", ui.label(8, 156, "LAST 16 BLOCKS" .. DOT .. "TRANSACTIONS", { size = 12, color = "lpurple" }))
 local BAR_Y = 170
-local bars = G(ui.canvas(0, BAR_Y, 320, 46, { color = "bg" }))
+local bars = V("galaxy", ui.canvas(0, BAR_Y, 320, 46, { color = "bg" }))
 
 local view = "live"
 local function showView(v)
   view = v
-  for _, o in ipairs(liveObjs) do o:show(v == "live") end
-  for _, o in ipairs(galObjs) do o:show(v == "galaxy") end
+  for name, list in pairs(views) do
+    for _, o in ipairs(list) do o:show(name == v) end
+  end
 end
 showView("live")
 
 ---------------------------------------------------------------------------------
 -- Drawing
 
-local function card(c, x, d, current, now, live_s)
-  if x <= -CW or x >= 320 then return end
-  local y = 2
-  local ours = d[3] == 1
-  c:rect(x, y, CW, CH, ours and OURS_BG or PANEL)
-  -- frame
-  local fc = current and GREEN or (ours and PURPLE or BORDER)
-  c:rect(x, y, CW, 1, fc) c:rect(x, y + CH - 1, CW, 1, fc)
-  c:rect(x, y, 1, CH, fc) c:rect(x + CW - 1, y, 1, CH, fc)
-  if ours then for k = 0, 5 do c:rect(x + 1 + k * 10, y + 1, 10, 2, grad(k / 5)) end end
-  -- the four slots
-  local cells = d[4]
-  for j = 0, 3 do
-    local s = d[1] + j
-    local st = tonumber(cells:sub(j + 1, j + 1)) or 0
-    local px, py, pw, ph = x + 4 + j * 13, y + 20, 11, 24
-    if st >= 2 then
-      c:rect(px, py, pw, ph, STATE[st])
-      if st == 5 then c:line(px + 2, py + 2, px + pw - 3, py + ph - 3, BG) c:line(px + pw - 3, py + 2, px + 2, py + ph - 3, BG) end
+-- A slot's cell: its state's colour, or filling up while it is being made.
+local function cell(c, px, py, pw, ph, st, s, live_s, f, now, up)
+  if st >= 2 then
+    c:rect(px, py, pw, ph, STATE[st])
+    if st == 5 and ph > 14 then
+      c:line(px + 2, py + 2, px + pw - 3, py + ph - 3, BG) c:line(px + pw - 3, py + 2, px + 2, py + ph - 3, BG)
+    end
+    return
+  end
+  c:rect(px, py, pw, ph, BORDER)
+  c:rect(px + 1, py + 1, pw - 2, ph - 2, BG)
+  if s == live_s then                          -- being made: fill up as the slot goes
+    if up then
+      local h = math.floor((ph - 2) * f)
+      if h > 0 then c:rect(px + 1, py + ph - 1 - h, pw - 2, h, mix(AQUA, 0xFFFFFF, f)) end
     else
-      c:rect(px, py, pw, ph, BG)
-      c:rect(px, py, pw, 1, BORDER) c:rect(px, py + ph - 1, pw, 1, BORDER)
-      c:rect(px, py, 1, ph, BORDER) c:rect(px + pw - 1, py, 1, ph, BORDER)
-      if s == live_s then                      -- being made: fill up as the slot goes
-        local f = ((now - estAt) - (s - est) * sd) / sd
-        f = f < 0 and 0 or (f > 1 and 1 or f)
-        local h = math.floor((ph - 2) * f)
-        if h > 0 then c:rect(px + 1, py + ph - 1 - h, pw - 2, h, mix(AQUA, 0xFFFFFF, f)) end
-      elseif s < live_s and st == 1 then        -- made, waiting for the network's word
-        local p = (math.sin(now / 80) + 1) / 2
-        c:rect(px + 1, py + 1, pw - 2, ph - 2, mix(0x1E3A40, AQUA, p * 0.6))
-      end
+      local w = math.floor((pw - 2) * f)
+      if w > 0 then c:rect(px + 1, py + 1, w, ph - 2, mix(AQUA, 0xFFFFFF, f)) end
+    end
+  elseif s < live_s and st == 1 then           -- made, waiting for the network's word
+    c:rect(px + 1, py + 1, pw - 2, ph - 2, mix(0x1E3A40, AQUA, (math.sin(now / 80) + 1) * 0.3))
+  end
+end
+
+-- Does this window have a cell that moves on its own (being made, or waiting)?
+local function moving(d, live_s)
+  return (live_s >= d[1] and live_s <= d[1] + 3) or (d[1] <= live_s and d[4]:find("1", 1, true) ~= nil)
+end
+
+local function drawCard(card, d, current, now, live_s, f)
+  local c = card.cv
+  local ours = d[3] == 1
+  local fc = current and GREEN or (ours and PURPLE or BORDER)
+  c:rect(0, 0, CW, CH, fc)
+  c:rect(1, 1, CW - 2, CH - 2, ours and OURS_BG or PANEL)
+  if ours then for k = 0, 5 do c:rect(1 + k * 10, 1, k == 5 and 8 or 10, 2, grad(k / 5)) end end
+  for j = 0, 3 do
+    cell(c, 4 + j * 13, 20, 11, 24, tonumber(d[4]:sub(j + 1, j + 1)) or 0, d[1] + j, live_s, f, now, true)
+  end
+  local w = math.floor((CW - 8) * math.min(d[5], 2400) / 2400)
+  c:rect(4, CH - 6, CW - 8, 2, PANEL_HI)
+  if w > 0 then c:rect(4, CH - 6, w, 2, ours and GREEN or AQUA) end
+end
+
+local function drawCarousel(now, live_s, f)
+  if #disp < 5 then return end
+  local off = math.floor(slide + 0.5)
+  for k = 1, 5 do
+    local card, d = cards[k], disp[k]
+    local x = (k - 1) * PITCH + off
+    if card.x ~= x then
+      card.cv:pos(x, CAR_Y) card.x = x
+      card.name:pos(x + 4, CAR_Y + 4) card.tx:pos(x + 4, CAR_Y + 46)
+    end
+    local sig = d[1] .. d[4] .. d[5] .. d[3] .. (k == 3 and "c" or "")
+    if sig ~= card.sig or moving(d, live_s) then
+      drawCard(card, d, k == 3, now, live_s, f)
+      card.sig = sig
+      card.name:text(d[2]:sub(1, 7))
+      card.name:color(d[3] == 1 and "lime" or (k == 3 and "text" or "dim"))
+      card.tx:text(d[5] > 0 and (big(d[5]) .. " tx") or (k > 3 and "next" or ""))
+      card.tx:color(k == 3 and "text" or "dim")
     end
   end
-  -- transactions bar
-  local w = math.floor((CW - 8) * math.min(d[5], 2400) / 2400)
-  c:rect(x + 4, y + CH - 6, CW - 8, 2, PANEL_HI)
-  if w > 0 then c:rect(x + 4, y + CH - 6, w, 2, ours and GREEN or AQUA) end
 end
 
-local function drawCarousel(now)
-  car:clear(BG)
-  if #disp < 5 then return end
-  local live_s = liveSlot(now)
-  local off = math.floor(slide + 0.5)
-  if ghost then card(car, -PITCH + off, ghost, false, now, live_s) end
-  for k = 1, 5 do
-    local x = (k - 1) * PITCH + off
-    local d = disp[k]
-    card(car, x, d, k == 3, now, live_s)
-    local n, t = names[k], txs[k]
-    n:pos(x + 4, CAR_Y + 6)
-    t:pos(x + 4, CAR_Y + 48)
-    n:text(d[2]:sub(1, 10))
-    n:color(d[3] == 1 and "lime" or (k == 3 and "text" or "dim"))
-    t:text(d[5] > 0 and (big(d[5]) .. " tx") or (k > 3 and "next" or ""))
-    t:color(k == 3 and "text" or "dim")
-  end
-end
-
-local function drawChart(now)
+local function drawChart(live_s, f)
+  local shift = math.floor(f * SLOT_W)
+  local key = live_s * 8 + shift               -- redraw only when the picture moves
+  if key == chartKey then return end
+  chartKey = key
   chart:clear(BG)
   local H = CHART_H
   for q = 1, 3 do chart:rect(0, H - (H * q) // 4, 320, 1, PANEL) end
-  local live_s = liveSlot(now)
-  -- how far into the live slot we are, so the bars glide instead of jumping
-  local f = ((now - estAt) - (live_s - est) * sd) / sd
-  f = f < 0 and 0 or (f > 1 and 1 or f)
-  local shift = math.floor(f * SLOT_W)
   local scale = (H - 14) / chartMax
   local top = 0
   for k = 0, 320 // SLOT_W + 1 do
     local s = live_s - k
-    local x = 320 - SLOT_W - k * SLOT_W - shift + SLOT_W
+    local x = 320 - k * SLOT_W - shift
     local b = slotTx[s]
     if b then
       if b[3] then chart:rect(x, 12, SLOT_W, H - 12, 0x1A0C33) end
@@ -274,37 +328,73 @@ local function drawChart(now)
         local oh = math.floor(b[1] * scale)
         local fh = math.floor(b[2] * scale)
         if b[3] then
-          for yy = 0, oh + fh - 1, 2 do chart:rect(x, H - 1 - yy - 1, SLOT_W - 1, 2, grad(yy / (H - 14))) end
+          for yy = 0, oh + fh - 1, 2 do chart:rect(x, H - 2 - yy, SLOT_W - 1, 2, grad(yy / (H - 14))) end
         else
           if oh > 0 then chart:rect(x, H - oh, SLOT_W - 1, oh, 0x0C5A44) chart:rect(x, H - oh, SLOT_W - 1, 1, GREEN) end
           if fh > 0 then chart:rect(x, H - oh - fh, SLOT_W - 1, fh, 0x5A1E4A) chart:rect(x, H - oh - fh, SLOT_W - 1, 1, PINK) end
         end
         if b[1] + b[2] > top then top = b[1] + b[2] end
       end
-    elseif s == live_s then                     -- the slot being made
-      local p = (math.sin(now / 80) + 1) / 2
-      chart:rect(x, H - 3, SLOT_W - 1, 3, mix(0x1E3A40, AQUA, p))
+    elseif s == live_s then
+      chart:rect(x, H - 3, SLOT_W - 1, 3, AQUA)
     end
   end
   chartMax = math.max(500, ((top // 250) + 1) * 250)
+  maxL:text(grouped(chartMax) .. " tx")
 end
 
-local function drawTimeline(now)
+local function drawSchedule(now, live_s, f)
+  if #disp < 5 then return end
+  for r = 1, SROWS do
+    local d = r <= 3 and disp[6 - r] or hist[r - 3]
+    local row = srows[r]
+    if d then
+      local sig = d[1] .. d[4] .. d[5] .. "/" .. (d[7] or 0) .. "/" .. (d[8] or 0)
+      local anim = moving(d, live_s)
+      if sig ~= row.sig or anim then
+        if sig ~= row.sig then
+          local ours = d[3] == 1
+          row.name:text((ours and "> " or "") .. d[2]:sub(1, 10))
+          row.name:color(ours and "lime" or (r == 3 and "text" or "dim"))
+          if r < 3 then
+            row.stat:text(r == 1 and "" or "next")
+          else
+            local fee = (d[7] or 0) > 0 and string.format("%.4f", d[7] / 1000000000) or "-"
+            row.stat:text(string.format(STATS, d[5] > 0 and big(d[5]) or "-", fee, (d[8] or 0) > 0 and tostring(d[8]) or "-"))
+          end
+          row.stat:color(ours and "lime" or (r == 3 and "text" or "dim"))
+          row.sig = sig
+        end
+        row.cv:clear()
+        for j = 0, 3 do
+          cell(row.cv, j * 15, 0, 13, 12, tonumber(d[4]:sub(j + 1, j + 1)) or 0, d[1] + j, live_s, f, now, false)
+        end
+      end
+    elseif row.sig ~= "" then
+      row.name:text("") row.stat:text("") row.cv:clear() row.sig = ""
+    end
+  end
+end
+
+local function nextWindows()
+  return info and type(info.next) == "table" and info.next or {}
+end
+
+local function drawTimeline(now, p)
+  local key = est * 4 + (now // 250) % 4       -- 4 redraws a second is plenty here
+  if key == tlKey then return end
+  tlKey = key
   tl:clear(BG)
   tl:rect(10, 30, 300, 1, BORDER)
   for m = 0, 10 do tl:rect(10 + m * 30, 28, 1, 5, BORDER) end
-  if info and type(info.next) == "table" then
-    for _, w in ipairs(info.next) do
-      local t = ((w - est) * sd - (now - estAt)) / 1000
-      if t >= -1 and t <= 600 then
-        local x = 10 + math.floor(t / 2)          -- 600 s over 300 px
-        local h = 24
-        for yy = 0, h - 1 do tl:rect(x, 28 - h + yy, 3, 1, grad(yy / h)) end
-      end
+  for _, w in ipairs(nextWindows()) do
+    local t = ((w - est) - p) * sd / 1000
+    if t >= -1 and t <= 600 then
+      local x = 10 + math.floor(t / 2)          -- 600 s over 300 px
+      for yy = 0, 23 do tl:rect(x, 4 + yy, 3, 1, grad(yy / 24)) end
     end
   end
-  local p = (math.sin(now / 150) + 1) / 2
-  tl:rect(9, 0, 2, 34, mix(GREEN, LIME, p))
+  tl:rect(9, 0, 2, 34, mix(GREEN, LIME, (math.sin(now / 150) + 1) / 2))
 end
 
 local function drawBars()
@@ -328,6 +418,7 @@ end
 ---------------------------------------------------------------------------------
 -- Messages
 
+local skipPct = 0
 local function onInfo(m)
   info = m
   if type(m.sd) == "number" and m.sd > 50 then sd = m.sd end
@@ -336,38 +427,43 @@ local function onInfo(m)
   if (m.rank or 0) > 0 then parts[#parts + 1] = "#" .. m.rank end
   if m.share then parts[#parts + 1] = string.format("%.2f%%", m.share) end
   if m.comm then parts[#parts + 1] = string.format("%g%%", m.comm) end
-  subL:text(table.concat(parts, " · "))
+  subL:text(table.concat(parts, DOT))
   pctL:text((m.pct or 0) .. "%")
-  epL:text("E" .. (m.epoch or ""))
   drawRing(m.pct or 0)
   local past = (m.done or 0) + (m.skip or 0)
-  local skip = past > 0 and (m.skip or 0) * 100 / past or 0
+  skipPct = past > 0 and (m.skip or 0) * 100 / past or 0
   gStats:text(grouped(m.done or 0) .. " / " .. grouped(m.leader or 0))
-  gStats2:text(string.format("this epoch · skip %.2f%%", skip))
+  gStats2:text(string.format("E%d skip %.2f%%", m.epoch or 0, skipPct))
   if #blocks == 0 and type(m.last) == "table" then
     for i, b in ipairs(m.last) do
       if type(b) == "table" then blocks[i] = { b[1] or 0, b[2] == 1 } end
     end
     if view == "galaxy" then drawBars() end
   end
-  if not win.on then cdSub:text(string.format("skip %.2f%%", skip)) cdSub:color(skip > 0 and "orange" or "dim") end
-  if m.delinq then cdSub:text("DELINQUENT") cdSub:color("pink") end
+end
+
+local function remember(d)       -- a past window, for the schedule: newest first, 6 kept
+  for i = 1, #hist do
+    if hist[i][1] == d[1] then hist[i] = d return end
+    if hist[i][1] < d[1] then table.insert(hist, i, d) hist[7] = nil return end
+  end
+  if #hist < 6 then hist[#hist + 1] = d end
 end
 
 local function onFrame(m, now)
-  if type(m.r) ~= "table" or #m.r < 5 then return end
+  if type(m.r) ~= "table" or #m.r < 5 or type(m.e) ~= "number" then return end
   local new = {}
   for k = 1, 5 do
-    local d = m.r[6 - k]                     -- the relay sends future first
-    if type(d) ~= "table" or #d < 5 then return end
+    local d = m.r[6 - k]                     -- the relay sends the future first
+    if type(d) ~= "table" or #d < 5 or type(d[4]) ~= "string" or type(d[2]) ~= "string" then return end
     new[k] = d
   end
   if disp[3] and new[3][1] ~= disp[3][1] then  -- the next leader took over: slide
-    ghost = disp[1]
     slide = slide + PITCH * ((new[3][1] - disp[3][1]) // 4)
-    if slide > PITCH * 2 then slide = 0 ghost = nil end
+    if slide > PITCH * 2 or slide < 0 then slide = 0 end
   end
   disp = new
+  remember(new[1]) remember(new[2])
   for k = 1, 5 do
     local d = new[k]
     local per = d[6]
@@ -381,11 +477,12 @@ local function onFrame(m, now)
     end
   end
   if m.e ~= est then
-    est, estAt = m.e, now
+    newSlot(m.e, now)
+    tickAt = now
     slotTx[est - 100] = nil                 -- the chart shows ~64 slots: forget older ones
+    chartKey = nil
   end
-  tpsOk, tpsFail = m.ok or 0, m.fail or 0
-  tpsL:text(grouped(tpsOk + tpsFail))
+  tpsL:text(grouped((m.ok or 0) + (m.fail or 0)))
   live = true
 end
 
@@ -393,8 +490,7 @@ local ledSlot                    -- defined with the LEDs below
 
 local function onSlot(m)
   local i = m.i + 1
-  if i == 1 then win = { on = true, tx = 0, fee = 0, skip = false } end
-  win.on = true
+  if i == 1 or not win.on then win = { on = true, tx = 0, fee = 0, skip = false } end
   local ok = m.st == "ok"
   if ok then win.tx = win.tx + (m.tx or 0) win.fee = win.fee + (m.fee or 0) else win.skip = true end
   table.insert(blocks, 1, { m.tx or 0, not ok })
@@ -412,7 +508,6 @@ local mode = 1
 local level = {}
 for n = 1, 6 do level[n] = { 0, 0, 0 } end
 local fadeAt, FADE_MS = nil, 1200
-local tickAt = -1000
 
 ledSlot = function(i, ok)
   if i == 1 then for n = 1, 6 do level[n] = { 0, 0, 0 } end fadeAt = nil end
@@ -461,20 +556,19 @@ end
 --   Bluetooth: a phone runs the relay's /install page, which follows the relay and
 --     writes the same messages, packed, to this badge. Needs nothing from the store.
 
-local lastMsg = -10000
 local function dispatch(m, now)
   lastMsg = now
-  if m.t == "f" then
-    local before = est
-    onFrame(m, now)
-    if est ~= before then tickAt = now end
+  if m.t == "f" then onFrame(m, now)
   elseif m.t == "info" then onInfo(m)
   elseif m.t == "slot" and type(m.i) == "number" and m.i >= 0 and m.i <= 3 then onSlot(m) end
 end
 
--- Wi-Fi
+-- Wi-Fi. Asking for a socket keeps the radio busy for a few seconds, which Bluetooth
+-- shares: never ask while the phone is feeding us, and rarely once refused.
 local retry = 1000
-local function connect()
+local connect
+connect = function()
+  if sys.millis() - lastBle < 10000 then timer.after(60000, connect) return end
   ws.open(RELAY, function(event, data)
     if event == "open" then
       retry = 1000
@@ -482,10 +576,9 @@ local function connect()
       local m = json.decode(data)
       if type(m) == "table" then dispatch(m, sys.millis()) end
     else
-      -- refused by the badge server: no point hammering, the phone can feed us
       local refused = data == "denied" or data == "not linked" or data == "host not allowed"
-      if sys.millis() - lastMsg > 3000 then tpsL:text(refused and "phone?" or tostring(data)) end
-      timer.after(refused and 60000 or retry, connect)
+      if not live then tpsL:text(refused and "phone?" or tostring(data)) end
+      timer.after(refused and 600000 or retry, connect)
       retry = math.min(retry * 2, 30000)
     end
   end)
@@ -498,15 +591,17 @@ local RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 
 local function unpackMsg(d)
   local k = d:sub(1, 1)
-  if k == "F" and #d == 154 then               -- frame: est, tps, 5 windows of 29 bytes
+  if k == "F" and #d == 184 then               -- frame: est, tps, 5 windows of 35 bytes
     local _, e, ok, fail = string.unpack("<c1I4I2I2", d)
     local cur, rows = e - e % 4, {}
     for j = 0, 4 do
-      local ours, cells, a1, b1, a2, b2, a3, b3, a4, b4, name = string.unpack("<BI2I2I2I2I2I2I2I2I2c10", d, 10 + j * 29)
+      local ours, cells, a1, b1, a2, b2, a3, b3, a4, b4, fee, ms, name =
+        string.unpack("<BI2I2I2I2I2I2I2I2I2I4I2c10", d, 10 + j * 35)
       local c = ""
       for n = 0, 3 do c = c .. ((cells >> (n * 4)) & 15) end
       name = name:gsub("[%z ]+$", "")
-      rows[j + 1] = { cur + 8 - 4 * j, name, ours, c, a1 + b1 + a2 + b2 + a3 + b3 + a4 + b4, { a1, b1, a2, b2, a3, b3, a4, b4 } }
+      rows[j + 1] = { cur + 8 - 4 * j, name, ours, c, a1 + b1 + a2 + b2 + a3 + b3 + a4 + b4,
+        { a1, b1, a2, b2, a3, b3, a4, b4 }, fee, ms }
     end
     return { t = "f", e = e, ok = ok, fail = fail, r = rows }
   elseif k == "S" and #d == 13 then            -- one of our slots
@@ -538,7 +633,11 @@ if ble and ble.on() then
       ui.toast("Phone connected")
     elseif event == "write" and type(b) == "string" then
       local ok, m = pcall(unpackMsg, b)          -- anyone in range can write: check everything
-      if ok and m then dispatch(m, sys.millis()) end
+      if ok and m then
+        local now = sys.millis()
+        lastBle = now
+        dispatch(m, now)
+      end
     elseif event == "close" then
       advertise()
     end
@@ -549,54 +648,55 @@ end
 ---------------------------------------------------------------------------------
 -- Every tick (30 ms)
 
-local function nextWindow()
-  if not info or type(info.next) ~= "table" then return nil end
-  for _, w in ipairs(info.next) do if w + 3 >= est then return w end end
-  return nil
-end
-
-local tickN = 0
 function on_tick(ms)
   local now = sys.millis()
   if slide > 0 then
-    slide = slide * 0.55
-    if slide < 0.5 then slide = 0 ghost = nil end
+    slide = slide * 0.6
+    if slide < 0.5 then slide = 0 end
   end
   if live and now - lastMsg > 3000 then      -- nothing for 3 s: say so, don't just freeze
     live = false
     tpsL:text("no data")
   end
-  dotColor(live and mix(0x0A5A40, GREEN, (math.sin(now / 200) + 1) / 2) or 0xFF754A)
+  dot:color(live and mix(0x0A5A40, GREEN, (math.sin(now / 200) + 1) / 2) or 0xFF754A)
 
-  -- countdown
-  local w = nextWindow()
+  local p = live and phase(now) or 0
+  local whole = math.floor(p)
+  local live_s, f = est + whole, p - whole
+
+  -- Galaxy's next window
+  local w = nil
+  for _, s in ipairs(nextWindows()) do if s + 3 >= est then w = s break end end
   local left = nil
-  local leading = win.on or (w and w <= liveSlot(now))
+  local leading = win.on or (w ~= nil and w <= live_s)
   if leading then
     capL:text("LEADER NOW") capL:color("lime")
     cdL:text("+" .. grouped(win.tx) .. " tx") cdL:color("lime")
     cdSub:text(string.format("%.4f SOL fees", win.fee / 1000000000)) cdSub:color("green")
-    frameColor(mix(PURPLE, LIME, (math.sin(now / 60) + 1) / 2))
+    frame:color(mix(PURPLE, LIME, (math.sin(now / 60) + 1) / 2))
   elseif w then
-    left = ((w - est) * sd - (now - estAt)) / 1000
+    left = ((w - est) - p) * sd / 1000
     if left < 0 then left = 0 end
     capL:text("NEXT LEADER") capL:color("dim")
     cdL:text(dur(left)) cdL:color(left < 10 and "pink" or "lpurple")
-    frameColor(left < 10 and mix(PURPLE, PINK, (math.sin(now / 100) + 1) / 2) or PURPLE)
-    if win.doneAt and now - win.doneAt < 4000 then
-      cdSub:text(string.format("last +%s tx", grouped(win.tx))) cdSub:color("green")
+    frame:color(left < 10 and mix(PURPLE, PINK, (math.sin(now / 100) + 1) / 2) or PURPLE)
+    if info and info.delinq then
+      cdSub:text("DELINQUENT") cdSub:color("pink")
+    elseif win.doneAt and now - win.doneAt < 4000 then
+      cdSub:text("last +" .. grouped(win.tx) .. " tx") cdSub:color("green")
+    else
+      cdSub:text(string.format("E%d skip %.1f%%", info and info.epoch or 0, skipPct))
+      cdSub:color(skipPct > 0 and "orange" or "dim")
     end
   end
 
   if view == "live" then
-    drawCarousel(now)
-    tickN = tickN + 1
-    if tickN % 2 == 0 then
-      drawChart(now)
-      maxL:text(grouped(chartMax) .. " tx")
-    end
+    drawCarousel(now, live_s, f)
+    drawChart(live_s, f)
+  elseif view == "schedule" then
+    drawSchedule(now, live_s, f)
   else
-    drawTimeline(now)
+    drawTimeline(now, p)
     if leading then gCd:text("LEADER NOW") gCd:color("lime")
     elseif left then gCd:text(dur(left)) gCd:color(left < 10 and "pink" or "lpurple") end
     gSlot:text(w and ("slot " .. grouped(w)) or "")
@@ -606,7 +706,14 @@ end
 
 function on_key(key)
   if key == "left" or key == "right" then
-    showView(view == "live" and "galaxy" or "live")
+    local i = 1
+    for n, v in ipairs(ORDER) do if v == view then i = n end end
+    i = (i - 1 + (key == "right" and 1 or -1)) % #ORDER + 1
+    showView(ORDER[i])
+    -- what was drawn while hidden is stale: draw this view afresh
+    for k = 1, 5 do cards[k].sig = nil end
+    for r = 1, SROWS do srows[r].sig = nil end
+    chartKey, tlKey = nil, nil
     if view == "galaxy" then drawBars() end
     return true
   elseif key == "select" then

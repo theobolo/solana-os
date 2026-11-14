@@ -4,7 +4,8 @@
 //
 //   {"t":"f", ...}     the leader carousel: the 2 next leader windows, the current one
 //                      and the 2 before, each [start, leader name, 1 if ours, 4 state
-//                      digits, tx, [ok, fail] x 4], plus the estimated slot and the
+//                      digits, tx, [ok, fail] x 4, fees in lamports, ms per slot], plus
+//                      the estimated slot and the
 //                      cluster's TPS (ok, fail). A whole picture each time.
 //   {"t":"slot", ...}  each of our slots, as soon as it completes or is skipped
 //   {"t":"info", ...}  stake, rank, epoch, blocks, skips, our next 24 windows, last 16 blocks
@@ -31,7 +32,7 @@ export type Vote = { bps: number; stake: bigint; delinquent: boolean };
 export class Relay {
   epochs = new Map<number, Epoch>();
   names = new Map<string, string>();                 // identity -> validator name
-  slots = new Map<number, { st: number; ok: number; fail: number }>();
+  slots = new Map<number, { st: number; ok: number; fail: number; fee: number; ms: number }>();
   sent = new Map<number, 'ok' | 'skip'>();           // what badges heard about each of our slots
   skipped = new Set<number>();                       // our slots skipped for good
   ourBlocks: { s: number; tx: number; skip: boolean }[] = [];   // our last 16 slots, newest first
@@ -94,7 +95,8 @@ export class Relay {
     let st = LEVEL[p.level as string] ?? 1;
     if (p.skipped === true) st = 5;
     const ok = p.success_transaction_cnt ?? 0, fail = p.failed_transaction_cnt ?? 0, tx = ok + fail;
-    this.slots.set(p.slot, { st, ok, fail });
+    const lamports = Number(BigInt(p.transaction_fee ?? 0) + BigInt(p.priority_fee ?? 0) + BigInt(p.tips ?? 0));
+    this.slots.set(p.slot, { st, ok, fail, fee: lamports, ms: Math.round((p.duration_nanos ?? 0) / 1e6) });
     if (this.leaderOf(p.slot) !== this.identity) return;
     if (p.level === 'skipped' || (p.skipped === true && (p.level === 'rooted' || p.level === 'finalized'))) this.skipped.add(p.slot);
     const now: 'ok' | 'skip' | null = st === 5 ? 'skip' : st >= 2 ? 'ok' : null;
@@ -113,16 +115,19 @@ export class Relay {
     const est = this.est, cur = est - (est % 4);
     const rows = [];
     for (let w = cur + 8; w >= cur - 8; w -= 4) {            // 2 next, current, 2 before
-      let cells = '', tx = 0;
+      let cells = '', tx = 0, fee = 0, ms = 0, timed = 0;
       const per: number[] = [];                              // ok, fail for each of the 4 slots
       for (let s = w; s < w + 4; s++) {
         const x = this.slots.get(s);
         cells += x ? x.st : s <= est ? 1 : 0;
         tx += x ? x.ok + x.fail : 0;
         per.push(x?.ok ?? 0, x?.fail ?? 0);
+        if (x && x.st !== 5) fee += x.fee;
+        if (x && x.ms > 0) { ms += x.ms; timed++; }
       }
       const id = this.leaderOf(w);
-      rows.push([w, this.nameOf(id), id === this.identity ? 1 : 0, cells, tx, per]);
+      // fees: lamports the window's blocks collected (fees, priority fees, tips); then ms a slot
+      rows.push([w, this.nameOf(id), id === this.identity ? 1 : 0, cells, tx, per, Math.min(fee, 2147483647), timed ? Math.round(ms / timed) : 0]);
     }
     return { t: 'f', e: est, ok: Math.round(this.tpsOk), fail: Math.round(this.tpsFail), r: rows };
   }

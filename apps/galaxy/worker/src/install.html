@@ -53,18 +53,20 @@
 function packMsg(m) {
   const cap = (v, max) => Math.max(0, Math.min(max, Math.round(v || 0)));
   if (m.t === 'f' && Array.isArray(m.r) && m.r.length === 5) {
-    const b = new Uint8Array(154), d = new DataView(b.buffer);
+    const b = new Uint8Array(184), d = new DataView(b.buffer);
     b[0] = 70;                                       // "F"
     d.setUint32(1, m.e, true); d.setUint16(5, cap(m.ok, 65535), true); d.setUint16(7, cap(m.fail, 65535), true);
     m.r.forEach((r, j) => {
-      const o = 9 + j * 29;
+      const o = 9 + j * 35;
       b[o] = r[2] ? 1 : 0;
       let cells = 0;
       for (let n = 0; n < 4; n++) cells |= (Number(r[3][n]) & 15) << (n * 4);
       d.setUint16(o + 1, cells, true);
       for (let n = 0; n < 8; n++) d.setUint16(o + 3 + n * 2, cap((r[5] || [])[n], 65535), true);
+      d.setUint32(o + 19, cap(r[6], 2147483647), true);   // fees, lamports
+      d.setUint16(o + 23, cap(r[7], 65535), true);        // ms per slot
       const name = String(r[1]).replace(/[^\x20-\x7e]/g, '').slice(0, 10);
-      for (let n = 0; n < name.length; n++) b[o + 19 + n] = name.charCodeAt(n);
+      for (let n = 0; n < name.length; n++) b[o + 25 + n] = name.charCodeAt(n);
     });
     return b;
   }
