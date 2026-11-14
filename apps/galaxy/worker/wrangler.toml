@@ -24,3 +24,9 @@ FRAME_MS = "100"
 type = "Text"
 globs = ["**/*.lua", "**/*.html"]
 fallthrough = true
+
+# Files too big or too private for the code: the Android app (android/build.sh), put with
+#   npx wrangler kv key put --binding FILES galaxy-live.apk --path ../android/build/galaxy-live.apk --remote
+[[kv_namespaces]]
+binding = "FILES"
+id = "c912f1d378e34a77be0e27045ff2592f"

@@ -3,6 +3,7 @@
 //
 //   GET /live      the badge's WebSocket (badge_ticket checked, see LUA_API.md "ws")
 //   GET /status    whether it is following the feed, and the latest info and frame
+//   GET /app/galaxy-live.apk?k=<PHONE_KEY>  the Android relay app (android/), from KV
 //   GET /install   a page for a phone: installs the app on the badge over USB, then feeds
 //                  it over Bluetooth from GET /phone?k=<PHONE_KEY> (the same messages)
 //
@@ -23,7 +24,8 @@ interface Env {
   RELAY: DurableObjectNamespace;
   FD_WS: string; IDENTITY: string; VOTE: string; RPC_URL: string; APP: string;
   BADGE_SERVER: string; FRAME_MS: string; DEV_NO_TICKET?: string;
-  PHONE_KEY?: string;                    // a secret: lets the /install page's phone follow the relay
+  PHONE_KEY?: string;
+  FILES: KVNamespace;                     // galaxy-live.apk (it holds PHONE_KEY: served with the key only)                    // a secret: lets the /install page's phone follow the relay
 }
 
 export default {
@@ -33,6 +35,14 @@ export default {
     if (u.pathname === '/install') return new Response(page, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
     if (u.pathname === '/app/main.lua') return new Response(mainLua, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
     if (u.pathname === '/app/app.json') return new Response(JSON.stringify(manifest, null, 2) + '\n', { headers: { 'Content-Type': 'application/json' } });
+    if (u.pathname === '/app/galaxy-live.apk') {
+      const k = u.searchParams.get('k') ?? '';
+      if (!env.PHONE_KEY || k.length !== env.PHONE_KEY.length || !sameText(k, env.PHONE_KEY)) return new Response('no', { status: 403 });
+      const apk = await env.FILES.get('galaxy-live.apk', 'arrayBuffer');
+      if (!apk) return new Response('no app uploaded yet', { status: 404 });
+      return new Response(apk, { headers: { 'Content-Type': 'application/vnd.android.package-archive',
+        'Content-Disposition': 'attachment; filename="galaxy-live.apk"', 'Cache-Control': 'no-store' } });
+    }
     if (u.pathname === '/phone') {
       if (req.headers.get('Upgrade') !== 'websocket') return new Response('a WebSocket, please', { status: 426 });
       const k = u.searchParams.get('k') ?? '';

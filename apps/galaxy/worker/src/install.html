@@ -39,6 +39,13 @@
   </section>
 
   <section>
+    <h2>Recommandé : l'app Android</h2>
+    <p>La page s'arrête quand tu passes à une autre app. L'app Android, elle, continue en arrière-plan (notification « Galaxy Live »). Elle remplace l'étape 2 : l'étape 1 reste à faire ici.</p>
+    <p>Android te demandera d'autoriser l'installation depuis Chrome : c'est normal pour une app hors du Play Store.</p>
+    <button id="apk">Télécharger l'app Android</button>
+  </section>
+
+  <section>
     <h2>2. Données en direct (Bluetooth)</h2>
     <p>L'app ouverte sur le badge, choisis « Galaxy » dans la liste. Cette page relaie les slots au badge. Elle continue en arrière-plan (notification « Galaxy Live ») : ne ferme pas l'onglet.</p>
     <button id="bridge">Connecter le badge</button>
@@ -261,6 +268,13 @@ function keepAlive(log) {
   lock();
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { lock(); quiet.play().catch(() => {}); } });
 }
+
+// ---------------------------------------------------------------- the Android app
+$('apk').onclick = () => {
+  const key = new URLSearchParams(location.hash.slice(1)).get('k');
+  if (!key) { alert("Il manque la clé dans l'adresse (…/install#k=…)."); return; }
+  location.href = '/app/galaxy-live.apk?k=' + encodeURIComponent(key);
+};
 
 // ---------------------------------------------------------------- 2. live data over Bluetooth
 const NUS = '6e400001-b5a3-f393-e0a9-e50e24dcca9e', RX = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
