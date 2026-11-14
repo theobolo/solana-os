@@ -1,0 +1,11 @@
+{
+  "id": "validators",
+  "name": "Validators",
+  "version": "1.0.0",
+  "author": "@you",
+  "summary": "Your Solana validators at a glance: voting, commission, balances.",
+  "icon": "charge",
+  "accent": "14F195",
+  "category": "tools",
+  "permissions": ["rpc", "led"]
+}
