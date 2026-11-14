@@ -1,0 +1,12 @@
+{
+  "id": "galaxy-live",
+  "name": "Galaxy Live",
+  "version": "1.0.0",
+  "author": "@ghosty",
+  "summary": "The Galaxy validator live: stake, blocks, and LEDs on every slot it produces.",
+  "icon": "charge",
+  "accent": "9945FF",
+  "category": "tools",
+  "permissions": ["http", "led"],
+  "hosts": ["galaxy.example.com"]
+}
