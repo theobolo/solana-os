@@ -9,6 +9,12 @@
 //                      cluster's TPS (ok, fail). A whole picture each time.
 //   {"t":"slot", ...}  each of our slots, as soon as it completes or is skipped
 //   {"t":"info", ...}  stake, rank, epoch, blocks, skips, our next 24 windows, last 16 blocks
+//   {"t":"w", ...}     one leader window in full, for the schedule view: start, leader name,
+//                      1 if ours, its stake (SOL) and country, and for each of its 4 slots
+//                      [state, tx, fees (lamports, base + priority), tips (lamports), ms, CU %].
+//                      Sent whenever it changes (the current window, the two before and the two
+//                      next), and
+//                      the last ones to a client that connects.
 //
 // Slot state digits: 0 future, 1 being made, 2 completed, 3 notarized / confirmed,
 // 4 rooted / finalized, 5 skipped.
@@ -32,7 +38,10 @@ export type Vote = { bps: number; stake: bigint; delinquent: boolean };
 export class Relay {
   epochs = new Map<number, Epoch>();
   names = new Map<string, string>();                 // identity -> validator name
-  slots = new Map<number, { st: number; ok: number; fail: number; fee: number; ms: number }>();
+  slots = new Map<number, { st: number; ok: number; fail: number; fee: number; ms: number; base: number; tip: number; cu: number }>();
+  stakes = new Map<string, bigint>();               // identity -> stake (lamports), this epoch
+  countries = new Map<string, string>();            // identity -> country code (gossip)
+  private sentW = new Map<number, string>();        // window start -> what we last sent of it
   sent = new Map<number, 'ok' | 'skip'>();           // what badges heard about each of our slots
   skipped = new Set<number>();                       // our slots skipped for good
   ourBlocks: { s: number; tx: number; skip: boolean }[] = [];   // our last 16 slots, newest first
@@ -69,6 +78,7 @@ export class Relay {
       for (const p of [...(value.add ?? []), ...(value.update ?? [])]) {
         const id = p.identity_pubkey ?? p.identity;
         if (id && p.info?.name) this.names.set(id, p.info.name);
+        if (id && p.gossip?.country_code) this.countries.set(id, String(p.gossip.country_code).slice(0, 2).toUpperCase());
       }
     } else if (topic === 'slot' && key === 'skipped_history_cluster') {
       for (const s of value as number[]) if (this.leaderOf(s) === this.identity) this.skipped.add(s);
@@ -88,6 +98,9 @@ export class Relay {
       rank, stake: my, total: stakes.reduce((a, b) => a + b, 0n),
     });
     for (const e of [...this.epochs.keys()]) if (e < v.epoch - 1) this.epochs.delete(e);
+    if (!this.stakes.size || v.start_slot <= this.est) {     // this epoch's (the next one comes early)
+      this.stakes = new Map(keys.map((k, i) => [k, stakes[i]]));
+    }
     this.log(`epoch ${v.epoch}: ${windows.length} leader windows, stake rank ${rank}`);
   }
 
@@ -96,7 +109,10 @@ export class Relay {
     if (p.skipped === true) st = 5;
     const ok = p.success_transaction_cnt ?? 0, fail = p.failed_transaction_cnt ?? 0, tx = ok + fail;
     const lamports = Number(BigInt(p.transaction_fee ?? 0) + BigInt(p.priority_fee ?? 0) + BigInt(p.tips ?? 0));
-    this.slots.set(p.slot, { st, ok, fail, fee: lamports, ms: Math.round((p.duration_nanos ?? 0) / 1e6) });
+    const big = (v: unknown) => Math.min(Number(BigInt(String(v ?? 0).split('.')[0] || '0')), 2147483647);
+    this.slots.set(p.slot, { st, ok, fail, fee: lamports, ms: Math.round((p.duration_nanos ?? 0) / 1e6),
+      base: big(p.transaction_fee) + big(p.priority_fee), tip: big(p.tips),
+      cu: p.max_compute_units > 0 ? Math.round((p.compute_units ?? 0) * 100 / p.max_compute_units) : 0 });
     if (this.leaderOf(p.slot) !== this.identity) return;
     if (p.level === 'skipped' || (p.skipped === true && (p.level === 'rooted' || p.level === 'finalized'))) this.skipped.add(p.slot);
     const now: 'ok' | 'skip' | null = st === 5 ? 'skip' : st >= 2 ? 'ok' : null;
@@ -159,6 +175,37 @@ export class Relay {
       last: this.ourBlocks.map((b) => [b.tx, b.skip ? 1 : 0]), // our last 16 slots, newest first
       up: this.upstream,
     };
+  }
+
+  /** One leader window in full (see the top of this file). */
+  window(w: number) {
+    const id = this.leaderOf(w);
+    const d = [];
+    for (let s = w; s < w + 4; s++) {
+      const x = this.slots.get(s);
+      d.push(x ? [x.st, x.ok + x.fail, x.base, x.tip, x.ms, x.cu] : [s <= this.est ? 1 : 0, 0, 0, 0, 0, 0]);
+    }
+    const stake = id ? this.stakes.get(id) ?? 0n : 0n;
+    return { t: 'w', s: w, n: this.nameOf(id), o: id === this.identity ? 1 : 0, k: Number(stake / LAMPORTS),
+             c: (id && this.countries.get(id)) || '', d };
+  }
+
+  /** The windows that changed since we last said: the two before, the current one, the two next. */
+  changedWindows() {
+    const cur = this.est - (this.est % 4), out = [];
+    for (let w = cur - 8; w <= cur + 8; w += 4) {          // the two before, the current one, the two next
+      const m = this.window(w), k = JSON.stringify(m);
+      if (this.sentW.get(w) !== k) { this.sentW.set(w, k); out.push(m); }
+    }
+    for (const w of this.sentW.keys()) if (w < cur - 64) this.sentW.delete(w);
+    return out;
+  }
+
+  /** The last n windows before the current one, oldest first: for a client that connects. */
+  history(n: number) {
+    const cur = this.est - (this.est % 4), out = [];
+    for (let w = cur - 4 * n; w <= cur; w += 4) out.push(this.window(w));
+    return out;
   }
 
   /** Forget slots the carousel no longer shows. Call now and then. */

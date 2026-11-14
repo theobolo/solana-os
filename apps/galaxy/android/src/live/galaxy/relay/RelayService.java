@@ -155,7 +155,7 @@ public class RelayService extends Service {
         if (b == null) return;
         String t = m.optString("t");
         synchronized (this) {
-            if (t.equals("slot")) { slots.add(b); while (slots.size() > 32) slots.poll(); }
+            if (t.equals("slot") || t.equals("w")) { slots.add(b); while (slots.size() > 48) slots.poll(); }
             else if (t.equals("info")) info = b;
             else frame = b;
         }

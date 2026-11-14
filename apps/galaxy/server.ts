@@ -66,6 +66,7 @@ connect();
 let lastFrame = '';
 setInterval(() => {
   if (!clients.size || !relay.est) return;
+  for (const w of relay.changedWindows()) broadcast(w);
   const s = JSON.stringify(relay.frame());
   if (s === lastFrame) return;                 // nothing moved
   lastFrame = s;
@@ -86,7 +87,11 @@ Bun.serve<{ badge: string }>({
     return new Response('Galaxy Live relay', { status: 404 });
   },
   websocket: {
-    open(ws) { clients.add(ws); ws.send(JSON.stringify(relay.info())); if (relay.est) ws.send(JSON.stringify(relay.frame())); },
+    open(ws) {
+      clients.add(ws);
+      ws.send(JSON.stringify(relay.info()));
+      if (relay.est) { for (const w of relay.history(8)) ws.send(JSON.stringify(w)); ws.send(JSON.stringify(relay.frame())); }
+    },
     close(ws) { clients.delete(ws); },
     message() {},
   },

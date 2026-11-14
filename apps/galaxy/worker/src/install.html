@@ -77,6 +77,22 @@ function packMsg(m) {
     });
     return b;
   }
+  if (m.t === 'w' && Array.isArray(m.d) && m.d.length === 4) {
+    const b = new Uint8Array(84), d = new DataView(b.buffer);
+    b[0] = 87;                                       // "W"
+    d.setUint32(1, m.s, true); b[5] = m.o ? 1 : 0; d.setUint32(6, cap(m.k, 2147483647), true);
+    const cc = String(m.c || '').replace(/[^A-Z]/g, '').slice(0, 2).padEnd(2, ' ');
+    b[10] = cc.charCodeAt(0); b[11] = cc.charCodeAt(1);
+    const name = String(m.n).replace(/[^\x20-\x7e]/g, '').slice(0, 16);
+    for (let n = 0; n < name.length; n++) b[12 + n] = name.charCodeAt(n);
+    m.d.forEach((x, j) => {
+      const o = 28 + j * 14;
+      b[o] = cap(x[0], 15); d.setUint16(o + 1, cap(x[1], 65535), true);
+      d.setUint32(o + 3, cap(x[2], 2147483647), true); d.setUint32(o + 7, cap(x[3], 2147483647), true);
+      d.setUint16(o + 11, cap(x[4], 65535), true); b[o + 13] = cap(x[5], 255);
+    });
+    return b;
+  }
   if (m.t === 'slot') {
     const b = new Uint8Array(13), d = new DataView(b.buffer);
     b[0] = 83;                                       // "S"
@@ -323,7 +339,7 @@ $('bridge').onclick = async () => {
         const b = packMsg(m);
         if (!b) return;
         got++;
-        if (m.t === 'slot') slots.push(b); else if (m.t === 'info') info = b; else frame = b;
+        if (m.t === 'slot' || m.t === 'w') slots.push(b); else if (m.t === 'info') info = b; else frame = b;
         pump();
       };
       ws.onclose = () => { log('Relais fermé, nouvelle tentative…', 'err'); setTimeout(open, 2000); };

@@ -69,7 +69,7 @@ local function L(x, y, text, o)
     text = function(self, s) if self.t ~= s then self.o:text(s) self.t = s end end,
     color = function(self, c) if self.c ~= c then self.o:color(c) self.c = c end end,
     pos = function(self, px, py) if self.x ~= px or self.y ~= py then self.o:pos(px, py) self.x, self.y = px, py end end,
-    show = function(self, b) self.o:show(b) end }
+    show = function(self, b) if self.vis ~= b then self.o:show(b) self.vis = b end end }
 end
 local function R(x, y, w, h, o)
   local r = ui.rect(x, y, w, h, o)
@@ -85,7 +85,6 @@ local info = nil
 local est, sd = 0, 400           -- the relay's estimated slot, ms per slot
 local pbase, pat = 0, 0          -- our slot clock: slots past `est` at time `pat` (a small float)
 local disp = {}                  -- five windows, oldest first: {start, name, ours, cells, tx, per, fee, ms}
-local hist = {}                  -- past windows, newest first (for the schedule)
 local slide = 0                  -- px the carousel still has to slide
 local live = false
 local lastMsg, lastBle = -10000, -10000
@@ -191,22 +190,86 @@ local function drawRing(pct)
 end
 
 ---------------------------------------------------------------------------------
--- SCHEDULE view: 2 next leaders, the current one, the last 6
+-- SCHEDULE view, after the Firedancer dashboard's leader schedule: the next leaders
+-- on top, the current one in a teal frame, then the past ones, newest first, each with
+-- its four slots (state, transactions, fees, tips, time, compute used). The list slides
+-- down as each leader takes over; UP / DOWN scroll through the past ones, and back at
+-- the top it follows live again. Graphics go on one canvas (it clips what scrolls
+-- out); text is labels, a column of four lines each, aligned like the dashboard's.
 
-local SROWS, SROW_Y, SROW_H = 9, 44, 19
-local STATS = "%5s %6s %4s"
-V("schedule", ui.label(8, 28, "LEADER", { size = 12, color = "lpurple" }))
-V("schedule", ui.label(100, 28, "SLOTS", { size = 12, color = "lpurple" }))
-V("schedule", ui.label(166, 28, string.format(STATS, "TX", "FEES", "MS"), { size = 12, color = "lpurple", w = 148, align = "right" }))
-V("schedule", ui.rect(2, SROW_Y + 2 * SROW_H - 3, 316, SROW_H, { color = PANEL_HI, radius = 4 }))   -- the current leader
-local srows = {}
-for r = 1, SROWS do
-  local y = SROW_Y + (r - 1) * SROW_H
-  srows[r] = {
-    name = V("schedule", L(8, y, "", { size = 12, color = "dim", w = 90 })),
-    cv = V("schedule", ui.canvas(100, y + 1, 58, 12)),
-    stat = V("schedule", L(166, y, "", { size = 12, color = "dim", w = 148, align = "right" })),
-  }
+local FD_CARD, FD_BORDER, FD_NOW, FD_NOWBG = 0x121821, 0x252B35, 0x1FC9A9, 0x0D2126
+local FD_TEXT, FD_DIM, FD_UPBG, FD_RAIL_UP, FD_RAIL_PAST = 0xD0D4DA, 0x777B84, 0x0B0F16, 0x2A3240, 0x1B2433
+local LIST_Y = 40
+local LIST_H = ui.H - LIST_Y
+local UP_H, CARD_H, GAP = 16, 76, 4
+local COLS = {   -- x, width, align, title, title colour (the dashboard's)
+  { 12, 64, "left", "SLOT", FD_DIM },
+  { 92, 40, "right", "TX", 0x61AD6D },
+  { 136, 50, "right", "FEES", 0x45B5CE },
+  { 190, 50, "right", "TIPS", 0x1ED4A1 },
+  { 244, 32, "right", "MS", 0xB7B8B9 },
+  { 280, 32, "right", "CU", 0xCE9BFC },
+}
+local ICON_X = 80
+
+local sch = V("schedule", ui.canvas(0, LIST_Y, 320, LIST_H, { color = "bg" }))
+local pool = {}                  -- labels for the cards on screen (at most 4 show at once)
+for i = 1, 4 do
+  local c = { name = V("schedule", L(0, 0, "", { size = 14, color = FD_TEXT, w = 156 })),
+              meta = V("schedule", L(0, 0, "", { size = 12, color = FD_DIM, w = 140, align = "right" })), cols = {} }
+  for k, col in ipairs(COLS) do
+    c.cols[k] = V("schedule", L(0, 0, "", { size = 12, color = k == 1 and FD_DIM or FD_TEXT, w = col[2], align = col[3] }))
+  end
+  pool[i] = c
+end
+local ups = {}                   -- the next leaders, one line each
+for i = 1, 2 do
+  ups[i] = { name = V("schedule", L(0, 0, "", { size = 12, color = FD_DIM, w = 150 })),
+             when = V("schedule", L(0, 0, "", { size = 12, color = FD_DIM, w = 150, align = "right" })) }
+end
+V("schedule", ui.rect(0, 24, 320, LIST_Y - 24, { color = "bg" }))   -- what scrolls past the top slides under this
+for _, col in ipairs(COLS) do
+  V("schedule", ui.label(col[1], 27, col[4], { size = 12, color = col[5], w = col[2], align = col[3] }))
+end
+
+-- Slot state icons, 9 x 9 pixel art: future, being made (8 turns), completed,
+-- notarized, rooted, skipped
+local ICON_PAL = { t = 0x1DB9A6, n = 0x0F6E63, d = 0x3A4250, m = PINK }
+local function art(rows) return ui.load(rows, { palette = ICON_PAL }) end
+local CHECK = { "..ttttt..", ".ttttttt.", "tttttttkt", "ttttttktt", "tktttkttt", "ttktktttt", "tttkttttt", ".ttttttt.", "..ttttt.." }
+local RINGROWS = { "..ttttt..", ".t.....t.", "t.......t", "t.......t", "t.......t", "t.......t", "t.......t", ".t.....t.", "..ttttt.." }
+local function recolor(rows, from, to)
+  local out = {}
+  for i, r in ipairs(rows) do out[i] = r:gsub(from, to) end
+  return out
+end
+local function ringArt(pick)     -- the ring, each pixel coloured by its angle (0..1 from the top)
+  local rows = {}
+  for y = 1, 9 do
+    local r = {}
+    for x = 1, 9 do
+      if RINGROWS[y]:sub(x, x) == "t" then
+        local a = math.atan(x - 5, 5 - y) / (2 * math.pi)
+        if a < 0 then a = a + 1 end
+        r[x] = pick(a)
+      else
+        r[x] = "."
+      end
+    end
+    rows[y] = table.concat(r)
+  end
+  return art(rows)
+end
+local ICON = {
+  [0] = art(recolor(RINGROWS, "t", "d")),
+  [2] = art(RINGROWS),
+  [3] = art(recolor(CHECK, "t", "n")),
+  [4] = art(CHECK),
+  [5] = art({ "..mmmmm..", ".mmmmmmm.", "mmkmmmkmm", "mmmkmkmmm", "mmmmkmmmm", "mmmkmkmmm", "mmkmmmkmm", ".mmmmmmm.", "..mmmmm.." }),
+}
+local SPIN = {}
+for f = 0, 7 do
+  SPIN[f] = ringArt(function(a) return (f / 8 - a) % 1 < 0.38 and "t" or "d" end)
 end
 
 ---------------------------------------------------------------------------------
@@ -343,37 +406,165 @@ local function drawChart(live_s, f)
   maxL:text(grouped(chartMax) .. " tx")
 end
 
-local function drawSchedule(now, live_s, f)
+-- Leader windows in full, from the relay's "w" messages (start -> record)
+local wins, winOrder = {}, {}
+local schedDirty = true
+
+local function fromRow(r)        -- what a frame says of a window, until its "w" comes
+  local d, per = {}, type(r[6]) == "table" and r[6] or {}
+  for j = 0, 3 do
+    d[j + 1] = { tonumber(r[4]:sub(j + 1, j + 1)) or 0, (per[j * 2 + 1] or 0) + (per[j * 2 + 2] or 0) }
+  end
+  return { s = r[1], n = r[2], o = r[3], d = d }
+end
+
+local function cardText(w)       -- the six columns of a card, four lines each
+  local c = { {}, {}, {}, {}, {}, {} }
+  for j = 1, 4 do
+    local x = w.d[j]
+    local done = x[1] >= 2 and x[1] ~= 5
+    c[1][j] = tostring(w.s + j - 1)
+    c[2][j] = done and tostring(x[2] or 0) or "-"
+    c[3][j] = (done and x[3]) and string.format("%.5f", x[3] / 1000000000) or "-"
+    c[4][j] = (done and x[4]) and string.format("%.5f", x[4] / 1000000000) or "-"
+    c[5][j] = (done and (x[5] or 0) > 0) and tostring(x[5]) or "-"
+    c[6][j] = (done and (x[6] or 0) > 0) and (x[6] .. "%") or "-"
+  end
+  for k = 1, 6 do c[k] = table.concat(c[k], "\n") end
+  return c
+end
+
+local scroll, scrollTo, slideY = 0, 0, 0
+local schedCur, lastSpin = nil, -1
+
+local function schedItems()      -- the list, top to bottom: {kind, row or record, y, h}
+  local items, y = {}, 2
+  if #disp < 5 then return items, 0 end
+  for k = 5, 4, -1 do items[#items + 1] = { kind = "up", r = disp[k], y = y, h = UP_H } y = y + UP_H end
+  y = y + 2
+  local cur = disp[3][1]
+  items[#items + 1] = { kind = "now", w = wins[cur] or fromRow(disp[3]), y = y, h = CARD_H }
+  y = y + CARD_H + GAP
+  for n = 1, 8 do
+    local w = wins[cur - 4 * n] or (n <= 2 and fromRow(disp[3 - n])) or nil
+    if not w then break end
+    items[#items + 1] = { kind = "past", w = w, y = y, h = CARD_H }
+    y = y + CARD_H + GAP
+  end
+  return items, y
+end
+
+local function drawSchedule(now, live_s, p)
   if #disp < 5 then return end
-  for r = 1, SROWS do
-    local d = r <= 3 and disp[6 - r] or hist[r - 3]
-    local row = srows[r]
-    if d then
-      local sig = d[1] .. d[4] .. d[5] .. "/" .. (d[7] or 0) .. "/" .. (d[8] or 0)
-      local anim = moving(d, live_s)
-      if sig ~= row.sig or anim then
-        if sig ~= row.sig then
-          local ours = d[3] == 1
-          row.name:text((ours and "> " or "") .. d[2]:sub(1, 10))
-          row.name:color(ours and "lime" or (r == 3 and "text" or "dim"))
-          if r < 3 then
-            row.stat:text(r == 1 and "" or "next")
-          else
-            local fee = (d[7] or 0) > 0 and string.format("%.4f", d[7] / 1000000000) or "-"
-            row.stat:text(string.format(STATS, d[5] > 0 and big(d[5]) or "-", fee, (d[8] or 0) > 0 and tostring(d[8]) or "-"))
-          end
-          row.stat:color(ours and "lime" or (r == 3 and "text" or "dim"))
-          row.sig = sig
+  local cur = disp[3][1]
+  if schedCur and cur ~= schedCur then           -- the next leader took over
+    local k = (cur - schedCur) // 4
+    if k > 0 and k < 4 then
+      if scrollTo == 0 then
+        slideY = math.max(slideY - k * (CARD_H + GAP), -2 * (CARD_H + GAP))
+      else                                       -- reading the past: keep it where it is
+        scroll, scrollTo = scroll + k * (CARD_H + GAP), scrollTo + k * (CARD_H + GAP)
+      end
+    end
+    schedDirty = true
+  end
+  schedCur = cur
+  local items, total = schedItems()
+  local maxS = math.max(0, total - LIST_H)
+  if scrollTo > maxS then scrollTo = maxS end
+  local moving = false
+  if slideY ~= 0 then
+    slideY = slideY * 0.62
+    if slideY > -0.5 then slideY = 0 end
+    moving = true
+  end
+  if scroll ~= scrollTo then
+    scroll = scroll + (scrollTo - scroll) * 0.45
+    if math.abs(scrollTo - scroll) < 0.5 then scroll = scrollTo end
+    moving = true
+  end
+  local off = math.floor(slideY - scroll + 0.5)
+  local spin = (now // 90) % 8
+  if not (moving or schedDirty or spin ~= lastSpin) then return end
+  lastSpin, schedDirty = spin, false
+
+  -- graphics
+  sch:clear(BG)
+  local used, upN = 0, 0
+  for _, it in ipairs(items) do
+    local y = it.y + off
+    local sy = LIST_Y + y
+    if y < LIST_H and y + it.h > 0 then
+      if it.kind == "up" then
+        sch:rect(2, y, 3, it.h - 2, FD_RAIL_UP)
+        sch:rect(8, y, 306, it.h - 2, FD_UPBG)
+        upN = upN + 1
+        local u, r = ups[upN], it.r
+        local t = ((r[1] - est) - p) * sd / 1000
+        u.name:text(((wins[r[1]] and wins[r[1]].n) or r[2]):sub(1, 20))
+        u.name:color(r[3] == 1 and "lime" or FD_DIM)
+        u.when:text(tostring(r[1]) .. "   " .. (t > 0 and string.format("%.1fs", t) or "now"))
+        u.name:pos(12, sy + 1) u.when:pos(160, sy + 1)
+        u.name:show(y >= -14) u.when:show(y >= -14)
+      else
+        local w, isNow = it.w, it.kind == "now"
+        local ours = w.o == 1
+        sch:rect(2, y, 3, it.h, isNow and FD_NOW or FD_RAIL_PAST)
+        sch:rect(8, y, 306, it.h, isNow and FD_NOW or (ours and PURPLE or FD_BORDER))
+        sch:rect(9, y + 1, 304, it.h - 2, isNow and FD_NOWBG or (ours and OURS_BG or FD_CARD))
+        if ours then for k = 0, 5 do sch:rect(9 + k * 51, y + 1, k == 5 and 49 or 51, 2, grad(k / 5)) end end
+        for j = 1, 4 do
+          local st, s = w.d[j][1], w.s + j - 1
+          local icon
+          if (st == 1 or st == 0) and s <= live_s then icon = SPIN[(spin + j * 2) % 8]
+          else icon = ICON[st] or ICON[0] end
+          sch:image(icon, ICON_X, y + 22 + (j - 1) * 13)
         end
-        row.cv:clear()
-        for j = 0, 3 do
-          cell(row.cv, j * 15, 0, 13, 12, tonumber(d[4]:sub(j + 1, j + 1)) or 0, d[1] + j, live_s, f, now, false)
+        used = used + 1
+        if used <= #pool then
+          local c = pool[used]
+          local vis = y >= -14              -- the band above hides what is still under it
+          c.name:text(w.n:sub(1, 18))
+          c.name:color(ours and "lime" or (isNow and "text" or FD_TEXT))
+          local meta = {}
+          if (w.k or 0) > 0 then meta[#meta + 1] = big(w.k) .. " SOL" end
+          if w.c and w.c ~= "" then meta[#meta + 1] = w.c end
+          c.meta:text(table.concat(meta, DOT))
+          c.name:pos(12, sy + 4) c.meta:pos(170, sy + 6)
+          c.name:show(vis) c.meta:show(vis)
+          local txt = cardText(w)
+          for k, col in ipairs(COLS) do
+            local l = c.cols[k]
+            l:text(txt[k])
+            l:pos(col[1], sy + 20)
+            l:show(vis)
+          end
         end
       end
-    elseif row.sig ~= "" then
-      row.name:text("") row.stat:text("") row.cv:clear() row.sig = ""
     end
   end
+  for i = upN + 1, #ups do ups[i].name:show(false) ups[i].when:show(false) end
+  for i = used + 1, #pool do
+    local c = pool[i]
+    c.name:show(false) c.meta:show(false)
+    for k = 1, #COLS do c.cols[k]:show(false) end
+  end
+end
+
+-- UP / DOWN in the schedule: from card to card
+local function schedScroll(dir)
+  local items = schedItems()
+  local best = nil
+  for _, it in ipairs(items) do
+    if it.kind ~= "up" then
+      local y = it.y - 2
+      if dir > 0 and y > scrollTo + 1 and (not best or y < best) then best = y end
+      if dir < 0 and y < scrollTo - 1 and (not best or y > best) then best = y end
+    end
+  end
+  if dir < 0 and (not best or best <= UP_H * 2 + 4) then best = 0 end
+  if best then scrollTo = math.max(0, best) end
+  schedDirty = true
 end
 
 local function nextWindows()
@@ -442,14 +633,6 @@ local function onInfo(m)
   end
 end
 
-local function remember(d)       -- a past window, for the schedule: newest first, 6 kept
-  for i = 1, #hist do
-    if hist[i][1] == d[1] then hist[i] = d return end
-    if hist[i][1] < d[1] then table.insert(hist, i, d) hist[7] = nil return end
-  end
-  if #hist < 6 then hist[#hist + 1] = d end
-end
-
 local function onFrame(m, now)
   if type(m.r) ~= "table" or #m.r < 5 or type(m.e) ~= "number" then return end
   local new = {}
@@ -463,7 +646,6 @@ local function onFrame(m, now)
     if slide > PITCH * 2 or slide < 0 then slide = 0 end
   end
   disp = new
-  remember(new[1]) remember(new[2])
   for k = 1, 5 do
     local d = new[k]
     local per = d[6]
@@ -560,6 +742,14 @@ local function dispatch(m, now)
   lastMsg = now
   if m.t == "f" then onFrame(m, now)
   elseif m.t == "info" then onInfo(m)
+  elseif m.t == "w" and type(m.s) == "number" and type(m.d) == "table" and #m.d == 4 and type(m.n) == "string" then
+    if not wins[m.s] then
+      winOrder[#winOrder + 1] = m.s
+      table.sort(winOrder)
+      while #winOrder > 12 do wins[table.remove(winOrder, 1)] = nil end
+    end
+    wins[m.s] = m
+    schedDirty = true
   elseif m.t == "slot" and type(m.i) == "number" and m.i >= 0 and m.i <= 3 then onSlot(m) end
 end
 
@@ -607,6 +797,14 @@ local function unpackMsg(d)
   elseif k == "S" and #d == 13 then            -- one of our slots
     local _, s, i, ok, tx, fee = string.unpack("<c1I4BBI2I4", d)
     return { t = "slot", s = s, i = i, st = ok == 1 and "ok" or "skip", tx = tx, fee = fee }
+  elseif k == "W" and #d == 84 then            -- one leader window in full
+    local _, s, o, stake, cc, name = string.unpack("<c1I4BI4c2c16", d)
+    local dd = {}
+    for j = 0, 3 do
+      local st, tx, fee, tip, ms, cu = string.unpack("<BI2I4I4I2B", d, 29 + j * 14)
+      dd[j + 1] = { st, tx, fee, tip, ms, cu }
+    end
+    return { t = "w", s = s, o = o, k = stake, c = (cc:gsub(" ", "")), n = (name:gsub("[%z ]+$", "")), d = dd }
   elseif k == "I" and #d >= 26 then            -- info
     local _, stake, share, rank, comm, delinq, epoch, pct, msd, leader, done, skip, up, nNext, nLast =
       string.unpack("<c1I4I2I2I2BI2BI2I2I2I2BBB", d)
@@ -694,7 +892,7 @@ function on_tick(ms)
     drawCarousel(now, live_s, f)
     drawChart(live_s, f)
   elseif view == "schedule" then
-    drawSchedule(now, live_s, f)
+    drawSchedule(now, live_s, p)
   else
     drawTimeline(now, p)
     if leading then gCd:text("LEADER NOW") gCd:color("lime")
@@ -705,6 +903,10 @@ function on_tick(ms)
 end
 
 function on_key(key)
+  if view == "schedule" and (key == "up" or key == "down") then
+    schedScroll(key == "down" and 1 or -1)
+    return true
+  end
   if key == "left" or key == "right" then
     local i = 1
     for n, v in ipairs(ORDER) do if v == view then i = n end end
@@ -712,7 +914,7 @@ function on_key(key)
     showView(ORDER[i])
     -- what was drawn while hidden is stale: draw this view afresh
     for k = 1, 5 do cards[k].sig = nil end
-    for r = 1, SROWS do srows[r].sig = nil end
+    schedDirty, lastSpin = true, -1
     chartKey, tlKey = nil, nil
     if view == "galaxy" then drawBars() end
     return true

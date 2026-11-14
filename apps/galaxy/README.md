@@ -21,7 +21,18 @@ LEFT et RIGHT passent d'une vue à l'autre : LIVE, SCHEDULE, GALAXY.
 
 ![Leader schedule](preview/schedule.png)
 
-Le leader schedule en tableau, comme sur le dashboard : les deux prochains leaders, le leader en cours, puis les six derniers. Chaque ligne donne les 4 slots, les transactions, les frais collectés (en SOL : frais, frais prioritaires et tips) et la durée moyenne d'un slot (en ms).
+Le leader schedule, sur le modèle de celui du dashboard Firedancer ([animation](preview/schedule.gif)) :
+
+- **En haut** : les deux prochains leaders, en lignes compactes, avec leur slot et un compte à rebours.
+- **Au milieu** : le leader en cours, dans une carte turquoise.
+- **Dessous** : les leaders passés, du plus récent au plus ancien.
+- **Chaque carte** porte le nom du leader, son stake et son pays, puis un tableau de ses 4 slots :
+  - une icône de statut : cercle vide pour un slot à venir, roue qui tourne pendant la production, cercle pour completed, coche foncée pour notarized, coche turquoise pour rooted, croix rose pour skipped ;
+  - les transactions, les frais (frais de base et prioritaires, en SOL), les tips, la durée (ms) et le compute utilisé (% du maximum).
+- **Les en-têtes de colonnes** reprennent les couleurs du dashboard, et une barre à gauche rappelle sa colonne « Upcoming / Now / Past ».
+- **Le défilement** : la liste glisse vers le bas à chaque nouveau leader. HAUT et BAS parcourent les 8 dernières fenêtres, carte par carte ; revenu en haut, la liste suit de nouveau le direct.
+
+Les tableaux viennent des messages `w` du relais (voir `core.ts`) : une fenêtre complète, envoyée à chaque changement, compactée sur 84 octets pour le Bluetooth.
 
 ## Vue GALAXY
 
@@ -98,6 +109,8 @@ Garde le fichier de signature (`KEYSTORE`, créé au premier build) : Android n'
 - `GET /status` renvoie l'état courant en JSON.
 - Le Worker vérifie le ticket signé que le badge envoie à l'ouverture du websocket : seule l'app `galaxy-live` peut se connecter (403 sinon).
 - Les réglages sont les `[vars]` de `worker/wrangler.toml` : `FD_WS`, `IDENTITY`, `VOTE`, `RPC_URL`, `APP`, `FRAME_MS`.
+
+Après une modification du relais (`core.ts` ou `worker/`), change aussi `RELAY_NAME` dans `worker/src/index.ts` : une instance déjà lancée garde son ancien code tant que des clients y sont connectés, même après un déploiement.
 
 Pour redéployer après une modification :
 

@@ -47,7 +47,7 @@ export default {
       if (req.headers.get('Upgrade') !== 'websocket') return new Response('a WebSocket, please', { status: 426 });
       const k = u.searchParams.get('k') ?? '';
       if (!env.PHONE_KEY || k.length !== env.PHONE_KEY.length || !sameText(k, env.PHONE_KEY)) return new Response('no', { status: 403 });
-      return env.RELAY.get(env.RELAY.idFromName('relay')).fetch(req);
+      return env.RELAY.get(env.RELAY.idFromName(RELAY_NAME)).fetch(req);
     }
     if (u.pathname !== '/live' && u.pathname !== '/status') return new Response('Galaxy Live relay', { status: 404 });
     if (u.pathname === '/live') {
@@ -58,9 +58,14 @@ export default {
         : await fromBadgeSocket(req.url, env.APP, u.host, env.BADGE_SERVER);
       if (!who) return new Response('no', { status: 403 });
     }
-    return env.RELAY.get(env.RELAY.idFromName('relay')).fetch(req);
+    return env.RELAY.get(env.RELAY.idFromName(RELAY_NAME)).fetch(req);
   },
 };
+
+// The relay object's name. A running object keeps the code it started with while sockets
+// hold it open, even across deploys: change this with any change to the relay so the next
+// connection gets an object running the new code (the old one stops once its sockets go).
+const RELAY_NAME = 'relay-3';
 
 function sameText(a: string, b: string) {   // compared in full, whatever differs
   let d = 0;
@@ -101,6 +106,7 @@ export class RelayDO {
     this.timers = [
       setInterval(() => {
         if (!this.clients.size || !this.relay.est) return;
+        for (const w of this.relay.changedWindows()) this.broadcast(w);
         const s = JSON.stringify(this.relay.frame());
         if (s === this.lastFrame) return;
         this.lastFrame = s;
@@ -159,7 +165,10 @@ export class RelayDO {
     server.addEventListener('close', gone);
     server.addEventListener('error', gone);
     server.send(JSON.stringify(this.relay.info()));
-    if (this.relay.est) server.send(JSON.stringify(this.relay.frame()));
+    if (this.relay.est) {
+      for (const w of this.relay.history(8)) server.send(JSON.stringify(w));
+      server.send(JSON.stringify(this.relay.frame()));
+    }
     return new Response(null, { status: 101, webSocket: client });
   }
 }

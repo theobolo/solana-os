@@ -57,6 +57,34 @@ final class Pack {
             }
             return b.array();
         }
+        if (t.equals("w")) {
+            JSONArray d = m.optJSONArray("d");
+            if (d == null || d.length() != 4) return null;
+            ByteBuffer b = ByteBuffer.allocate(84).order(ByteOrder.LITTLE_ENDIAN);
+            b.put(0, (byte) 'W');
+            b.putInt(1, (int) m.optLong("s"));
+            b.put(5, (byte) (truthy(m.opt("o")) ? 1 : 0));
+            b.putInt(6, cap(m.optDouble("k", 0), 2147483647L));
+            String cc = m.optString("c", "").replaceAll("[^A-Z]", "");
+            if (cc.length() > 2) cc = cc.substring(0, 2);
+            while (cc.length() < 2) cc += " ";
+            b.put(10, (byte) cc.charAt(0));
+            b.put(11, (byte) cc.charAt(1));
+            String name = m.optString("n", "").replaceAll("[^\\x20-\\x7e]", "");
+            if (name.length() > 16) name = name.substring(0, 16);
+            for (int n = 0; n < name.length(); n++) b.put(12 + n, (byte) name.charAt(n));
+            for (int j = 0; j < 4; j++) {
+                JSONArray x = d.optJSONArray(j);
+                int o = 28 + j * 14;
+                b.put(o, (byte) cap(x == null ? 0 : x.optDouble(0, 0), 15));
+                b.putShort(o + 1, (short) cap(x == null ? 0 : x.optDouble(1, 0), 65535));
+                b.putInt(o + 3, cap(x == null ? 0 : x.optDouble(2, 0), 2147483647L));
+                b.putInt(o + 7, cap(x == null ? 0 : x.optDouble(3, 0), 2147483647L));
+                b.putShort(o + 11, (short) cap(x == null ? 0 : x.optDouble(4, 0), 65535));
+                b.put(o + 13, (byte) cap(x == null ? 0 : x.optDouble(5, 0), 255));
+            }
+            return b.array();
+        }
         if (t.equals("slot")) {
             ByteBuffer b = ByteBuffer.allocate(13).order(ByteOrder.LITTLE_ENDIAN);
             b.put(0, (byte) 'S');
