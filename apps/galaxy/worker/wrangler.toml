@@ -1,0 +1,20 @@
+name = "galaxy-live-relay"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "RelayDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelayDO"]
+
+[vars]
+FD_WS = "wss://fd-mainnet.stakingfacilities.com/websocket"
+IDENTITY = "9eGrDohdNTAo61DRHyfMuqKWXqYnA3i254Wiszxe8FoY"   # Galaxy's identity
+VOTE = "CvSb7wdQAFpHuSpTYTJnX5SYH4hCfQ9VuGnqrKaKwycB"       # Galaxy's vote account
+RPC_URL = "https://api.mainnet-beta.solana.com"
+APP = "galaxy-live"                                         # the badge app's id (app.json)
+BADGE_SERVER = "https://badge-api.solana.com"
+FRAME_MS = "100"
