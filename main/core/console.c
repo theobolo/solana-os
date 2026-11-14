@@ -18,6 +18,7 @@
 #include "esp_system.h"
 #include "esp_app_desc.h"
 #include "esp_wifi.h"
+#include "psa/crypto.h"
 #include "bsp.h"
 #include "console.h"
 #include "os.h"
@@ -362,6 +363,8 @@ int console_stream_read(void *buf, size_t n, int timeout_ms)
 // room for a TLS handshake, so it runs on its own; "cloud hangup" first frees the
 // badge server's connection if the heap is short.
 static volatile bool s_fdbench;
+static int s_fdbench_mode;                  // FD_STORE, FD_DISCARD or FD_RAW
+enum { FD_STORE, FD_DISCARD, FD_RAW };
 
 #if CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
 // Since the last call: the share of the CPU each task had (one core: they add up to
@@ -420,12 +423,22 @@ static void fdbench_cpu(char *out, size_t n)
 static void fdbench_task(void *arg)
 {
     int secs = (int)(intptr_t)arg;
-    printf("fdbench: connecting to gui.firedancer.io...\n");
+    static const char *const MODE[] = { "store", "discard", "raw" };
+    printf("fdbench: connecting to gui.firedancer.io (%s)...\n", MODE[s_fdbench_mode]);
+    char *raw = s_fdbench_mode == FD_RAW ? heap_caps_malloc(16384, MALLOC_CAP_INTERNAL) : NULL;
+    if (s_fdbench_mode == FD_RAW && !raw) {
+        printf("fdbench: no memory for its buffer\n");
+        s_fdbench = false;
+        vTaskDelete(NULL);
+    }
+    os_ws_bench_discard(s_fdbench_mode == FD_DISCARD);
     int64_t t0 = esp_timer_get_time();
     esp_err_t err = os_ws_connect("wss://gui.firedancer.io/websocket", "compress-zstd");
     if (err != ESP_OK) {
         printf("fdbench: no connection (%s)%s\n", esp_err_to_name(err),
                err == ESP_ERR_NO_MEM ? ": try 'cloud hangup' first" : "");
+        os_ws_bench_discard(false);
+        free(raw);
         s_fdbench = false;
         vTaskDelete(NULL);
     }
@@ -441,12 +454,26 @@ static void fdbench_task(void *arg)
         char *m = NULL;
         size_t len = 0;
         int code = 0;
-        int r = os_ws_recv(&m, &len, 4u << 20, 200, &code);
+        int r;
+        if (raw) {
+            // The bytes only: no frames, no messages (msgs/s stays 0).
+            r = os_ws_read_raw(raw, 16384, 200);
+            if (r > 0) {
+                bytes += r;
+                r = OS_WS_TIMEOUT;
+            } else if (r == 0) {
+                r = OS_WS_TIMEOUT;
+            } else {
+                r = OS_WS_LOST;
+            }
+        } else {
+            r = os_ws_recv(&m, &len, 4u << 20, 200, &code);
+        }
         if (r == OS_WS_MSG) {
             msgs++;
             bytes += len;
             biggest = len > biggest ? len : biggest;
-            zstd += len >= 4 && (uint8_t)m[0] == 0x28 && (uint8_t)m[1] == 0xB5 && (uint8_t)m[2] == 0x2F && (uint8_t)m[3] == 0xFD;
+            zstd += m && len >= 4 && (uint8_t)m[0] == 0x28 && (uint8_t)m[1] == 0xB5 && (uint8_t)m[2] == 0x2F && (uint8_t)m[3] == 0xFD;
             free(m);
         } else if (r != OS_WS_TIMEOUT) {
             printf("fdbench: the connection ended (%d, close code %d)\n", r, code);
@@ -472,9 +499,55 @@ static void fdbench_task(void *arg)
         }
     }
     os_ws_close(1000);
+    os_ws_bench_discard(false);
+    free(raw);
     printf("fdbench: done, %u KB in %d s (a desktop gets ~420 KB/s from this dashboard)\n", (unsigned)total_kb, n);
     s_fdbench = false;
     vTaskDelete(NULL);
+}
+
+// fdbench aes: what the dashboard's cipher (TLS 1.2, ECDHE-ECDSA-AES128-GCM-SHA256 from
+// Cloudflare) costs to decrypt here, through PSA as TLS calls it (the AES peripheral),
+// on a 16 KB record in PSRAM (where TLS buffers go, os_mem_tls_caps) and in internal RAM.
+static void fdbench_aes(void)
+{
+    static const uint8_t key[16] = { 1, 2, 3 }, iv[12] = { 4, 5, 6 };
+    const size_t len = 16384;
+    psa_key_attributes_t a = PSA_KEY_ATTRIBUTES_INIT;
+    psa_key_id_t k = 0;
+    psa_set_key_type(&a, PSA_KEY_TYPE_AES);
+    psa_set_key_bits(&a, 128);
+    psa_set_key_usage_flags(&a, PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT);
+    psa_set_key_algorithm(&a, PSA_ALG_GCM);
+    if (psa_crypto_init() != PSA_SUCCESS || psa_import_key(&a, key, sizeof(key), &k) != PSA_SUCCESS) {
+        printf("fdbench aes: no key\n");
+        return;
+    }
+    for (int where = 0; where < 2; where++) {
+        unsigned caps = where ? MALLOC_CAP_INTERNAL : os_mem_tls_caps();
+        uint8_t *plain = heap_caps_malloc(len, caps), *sealed = heap_caps_malloc(len + 16, caps);
+        size_t got = 0;
+        if (!plain || !sealed) {
+            printf("fdbench aes: no memory\n");
+        } else {
+            memset(plain, 0x5A, len);
+            psa_status_t st = psa_aead_encrypt(k, PSA_ALG_GCM, iv, sizeof(iv), NULL, 0, plain, len, sealed, len + 16, &got);
+            int n = 0;
+            int64_t t0 = esp_timer_get_time(), t;
+            do {
+                st |= psa_aead_decrypt(k, PSA_ALG_GCM, iv, sizeof(iv), NULL, 0, sealed, len + 16, plain, len, &got);
+                n++;
+                t = esp_timer_get_time() - t0;
+            } while (t < 1000000);
+            unsigned kbps = (unsigned)((int64_t)n * len * 1000 / t);    // bytes/ms = KB/s
+            printf("fdbench aes: AES-128-GCM decrypt, 16 KB records in %s: %u KB/s%s; 450 KB/s of TLS takes %u%% of the CPU\n",
+                   where ? "internal RAM" : "PSRAM", kbps, st != PSA_SUCCESS ? " (failed!)" : "",
+                   (unsigned)(450u * 100 / (kbps ? kbps : 1)));
+        }
+        free(plain);
+        free(sealed);
+    }
+    psa_destroy_key(k);
 }
 
 static int cmd_fdbench(int argc, char **argv)
@@ -487,8 +560,14 @@ static int cmd_fdbench(int argc, char **argv)
         printf("fdbench: join Wi-Fi first\n");
         return 1;
     }
+    if (argc > 1 && !strcmp(argv[1], "aes")) {
+        fdbench_aes();
+        return 0;
+    }
     int secs = argc > 1 ? atoi(argv[1]) : 20;
     secs = secs < 5 ? 5 : secs > 120 ? 120 : secs;
+    const char *mode = argc > 2 ? argv[2] : "store";
+    s_fdbench_mode = !strcmp(mode, "discard") ? FD_DISCARD : !strcmp(mode, "raw") ? FD_RAW : FD_STORE;
     s_fdbench = true;
     if (xTaskCreate(fdbench_task, "fdbench", 12 * 1024, (void *)(intptr_t)secs, 4, NULL) != pdPASS) {
         s_fdbench = false;
@@ -523,7 +602,7 @@ static void start_now(void)
         { .command = "cloud", .help = "cloud [hangup] - badge server link: state, badge ID, owner, claim URL; hangup closes the connection", .func = cmd_cloud },
         { .command = "shot", .help = "Dump a screenshot (decode with tools/badge.py)", .func = cmd_shot },
         { .command = "heap", .help = "heap [stacks] - heap usage, and the tasks' stack margins", .func = cmd_heap },
-        { .command = "fdbench", .help = "fdbench [seconds] - read a Firedancer dashboard's websocket and say how fast it comes", .func = cmd_fdbench },
+        { .command = "fdbench", .help = "fdbench [seconds] [store|discard|raw] | fdbench aes - read a Firedancer dashboard's websocket and say how fast it comes (discard: keep no message, raw: bytes only), or time its cipher", .func = cmd_fdbench },
         { .command = "reboot", .help = "Restart the badge", .func = cmd_reboot },
     };
     for (int i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {

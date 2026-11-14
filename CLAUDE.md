@@ -111,9 +111,19 @@ FreeRTOS run-time stats) how busy the CPU was and its three busiest tasks.
 | + `sdkconfig.fdbench-fast` (Wi-Fi/lwIP IRAM, A-MPDU RX) | keeps up | 70-80% (fdbench ~50, wifi ~11, tcpip ~8) | ~92 KB |
 
 The Mac on the same Wi-Fi got ~410 KB/s, ~530 msgs/s. The 2880-byte window was the
-limit (2880 B per ~11 ms round trip to Cloudflare). What's left is the fdbench task
-itself (TLS and copying every message whole into PSRAM): a client must skip unwanted
-messages without storing them, and the UI gets the remaining 20-30%.
+limit (2880 B per ~11 ms round trip to Cloudflare).
+
+Where the fdbench task's time goes (fast build; `fdbench N store|discard|raw`, CPU per
+100 KB/s over the seconds at >= 350 KB/s; Cloudflare picks ECDHE-ECDSA-AES128-GCM-SHA256):
+store (each message whole in PSRAM) 7.1 / 9.8-10.3%, discard (read, keep nothing) 6.5%,
+raw (TLS bytes in 16 KB reads, no framing) 7.2 / 9.6%; wifi+tcpip 3.4-4.2%. The two
+figures are two sessions: within one, the modes match, between them the level moves.
+So copying and framing cost next to nothing: receiving the TLS stream is the cost.
+`fdbench aes` (PSA AES-128-GCM, 16 KB records): 1993 KB/s in PSRAM (where TLS buffers
+are), 2990 KB/s in internal RAM: 22% / 15% of the CPU at 450 KB/s (wall time, an upper
+bound). At the dashboard's ~450 KB/s a client costs ~50-70% of the CPU; the UI, zstd
+and JSON for the wanted topics get the rest. TLS buffers in internal RAM would save
+~7 points for ~16 KB of SRAM.
 
 Test builds (separate build dirs, the badge's config untouched):
 `idf.py -B build-fdbench-fast -D SDKCONFIG=build-fdbench-fast/sdkconfig -D

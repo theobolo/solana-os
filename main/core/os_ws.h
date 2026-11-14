@@ -6,6 +6,7 @@
 // it with ESP-IDF's WebSocket transport over TLS (core/os_ws.c), the emulator
 // with the browser's WebSocket.
 
+#include <stdbool.h>
 #include <stddef.h>
 #include "esp_err.h"
 
@@ -36,3 +37,10 @@ esp_err_t os_ws_send(char *text, size_t len);
 // Sends a close frame with code (0: none, the connection is gone anyway) and
 // frees everything.
 void os_ws_close(int code);
+
+// For fdbench (console.c), which measures what reading costs. Discard on: os_ws_recv
+// reads each data message into a small scratch buffer and returns it with *out NULL
+// (*len set), so nothing is stored. os_ws_read_raw: the connection's bytes as they
+// come, frames and all; >0 bytes, 0 nothing in time, <0 gone.
+void os_ws_bench_discard(bool on);
+int os_ws_read_raw(char *buf, size_t n, int timeout_ms);

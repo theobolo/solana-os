@@ -325,6 +325,24 @@ esp_err_t os_ws_connect(const char *url, const char *protocols)
     return err;
 }
 
+#define SCRATCH 4096
+static char *s_scratch;                     // fdbench's discard mode: data goes here, unkept
+
+void os_ws_bench_discard(bool on)
+{
+    if (on && !s_scratch) {
+        s_scratch = heap_caps_malloc(SCRATCH, MALLOC_CAP_INTERNAL);
+    } else if (!on) {
+        free(s_scratch);
+        s_scratch = NULL;
+    }
+}
+
+int os_ws_read_raw(char *buf, size_t n, int timeout_ms)
+{
+    return s_tls ? rd(buf, n, timeout_ms) : -1;
+}
+
 int os_ws_recv(char **out, size_t *len, size_t max, int timeout_ms, int *code)
 {
     *out = NULL;
@@ -390,6 +408,24 @@ int os_ws_recv(char **out, size_t *len, size_t max, int timeout_ms, int *code)
         if (n + flen > max) {
             ret = OS_WS_TOO_BIG;
             break;
+        }
+        if (s_scratch) {
+            bool ok = true;
+            for (uint64_t left = flen; ok && left;) {
+                size_t k = left < SCRATCH ? (size_t)left : SCRATCH;
+                ok = rd_all(s_scratch, k);
+                left -= k;
+            }
+            if (!ok) {
+                break;
+            }
+            n += flen;
+            if (fin) {
+                *len = n;
+                return OS_WS_MSG;
+            }
+            joining = true;
+            continue;
         }
         char *grown = realloc(msg, n + flen + 1);
         if (!grown) {
