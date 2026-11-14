@@ -293,8 +293,9 @@ while clock[0] < rec[-1][0] + 500:
         if kk and int(kk.split(":")[0]) == clock[0]: run_cb("on_key", g.on_key, kk.split(":")[1])
     run_cb("on_tick", g.on_tick, 30)
     # what this tick costs the screen: LVGL joins overlapping areas (when the union is smaller
-    # than the parts), then each area costs ~0.8 ms plus ~0.45 us a pixel (CHANGELOG 2.1.0:
-    # the whole app area, 320 x 218, in ~35 ms; ~1 ms an area)
+    # than the parts), then each area costs ~0.8 ms plus ~1.4 us a pixel. That is measured on
+    # the badge with this app (console top: taskLVGL's CPU over the pixels flushed, 1.0 to
+    # 1.7 us by view, 2026-11-14); CHANGELOG 2.1.0's ~0.45 us came from full-screen redraws.
     areas = []
     for a in DIRTY:
         x1, y1, x2, y2 = max(0, a[0]), max(STATUS_H, a[1]), min(320, a[2]), min(240, a[3])
@@ -311,7 +312,7 @@ while clock[0] < rec[-1][0] + 500:
                     areas[ia] = u; del areas[ja]; joined = True; break
             if joined: break
     px = sum((a[2] - a[0]) * (a[3] - a[1]) for a in areas)
-    TICKS.append((clock[0], len(areas), px, 0.8 * len(areas) + px * 0.00045, TICK_INS[0], LEDW[0]))
+    TICKS.append((clock[0], len(areas), px, 0.8 * len(areas) + px * 0.0014, TICK_INS[0], LEDW[0]))
     WHOT.append((clock[0], list(WHO))); WHO.clear()
     DIRTY.clear(); TICK_INS[0] = 0; LEDW[0] = 0
     if clock[0] % 1000 == 0:

@@ -19,6 +19,8 @@
 #include "esp_app_desc.h"
 #include "esp_wifi.h"
 #include "psa/crypto.h"
+#include "esp_lvgl_port.h"
+#include "lvgl.h"
 #include "bsp.h"
 #include "console.h"
 #include "os.h"
@@ -551,17 +553,62 @@ static void fdbench_aes(void)
     psa_destroy_key(k);
 }
 
-// top [seconds]: each second, how busy the CPU was and its four busiest tasks, from a
-// task of its own so the console stays free (key, shot) meanwhile. Needs a build with
-// FreeRTOS run-time stats (sdkconfig.stats).
+// The screen, for top: pixels sent to the LCD, refreshes, and the time LVGL spent
+// waiting for a flush to finish (it spins: esp_lvgl_port sets no flush_wait_cb).
+static volatile uint32_t s_lcd_px, s_lcd_refr, s_lcd_wait_us;
+static int64_t s_lcd_wait_at;
+
+static void top_lcd_event(lv_event_t *e)
+{
+    switch (lv_event_get_code(e)) {
+    case LV_EVENT_FLUSH_START:
+        s_lcd_px += lv_area_get_size((const lv_area_t *)lv_event_get_param(e));
+        break;
+    case LV_EVENT_REFR_START:
+        s_lcd_refr++;
+        break;
+    case LV_EVENT_FLUSH_WAIT_START:
+        s_lcd_wait_at = esp_timer_get_time();
+        break;
+    case LV_EVENT_FLUSH_WAIT_FINISH:
+        s_lcd_wait_us += (uint32_t)(esp_timer_get_time() - s_lcd_wait_at);
+        break;
+    default:
+        break;
+    }
+}
+
+// top [seconds]: each second, how busy the CPU was and its four busiest tasks, and what
+// the screen did, from a task of its own so the console stays free (key, shot)
+// meanwhile. The CPU part needs a build with FreeRTOS run-time stats (sdkconfig.stats).
 static void top_task(void *arg)
 {
+    static const lv_event_code_t EV[] = { LV_EVENT_FLUSH_START, LV_EVENT_REFR_START,
+                                          LV_EVENT_FLUSH_WAIT_START, LV_EVENT_FLUSH_WAIT_FINISH };
+    lv_display_t *d = NULL;
+    if (lvgl_port_lock(0)) {
+        d = lv_display_get_default();
+        for (int i = 0; d && i < 4; i++) {
+            lv_display_add_event_cb(d, top_lcd_event, EV[i], NULL);
+        }
+        lvgl_port_unlock();
+    }
     char cpu[128];
     fdbench_cpu(cpu, sizeof(cpu));
     for (int i = 0, n = (int)(intptr_t)arg; i < n; i++) {
+        s_lcd_px = s_lcd_refr = s_lcd_wait_us = 0;
         vTaskDelay(pdMS_TO_TICKS(1000));
+        uint32_t px = s_lcd_px, refr = s_lcd_refr, wait = s_lcd_wait_us;
         fdbench_cpu(cpu, sizeof(cpu));
-        printf("top: %2d s%s\n", i + 1, cpu[0] ? cpu : "  (no run-time stats in this build)");
+        printf("top: %2d s%s  lcd %u kpx in %u refr, flush wait %u ms\n", i + 1,
+               cpu[0] ? cpu : "  (no run-time stats in this build)", (unsigned)(px / 1000), (unsigned)refr,
+               (unsigned)(wait / 1000));
+    }
+    if (d && lvgl_port_lock(0)) {
+        for (int i = 0; i < 4; i++) {
+            lv_display_remove_event_cb_with_user_data(d, top_lcd_event, NULL);
+        }
+        lvgl_port_unlock();
     }
     vTaskDelete(NULL);
 }

@@ -6,9 +6,9 @@
 --   Leader carousel: five leader windows, the past on the left, the future on the
 --   right, the current one framed in teal. Each card shows the leader and its four
 --   slots: the slot being made fills up as it happens, then turns blue (completed),
---   dark teal (notarized) and teal (rooted), or pink if skipped. The cards slide left
---   when the next leader takes over. The followed validator's cards are orange.
---   TX / SLOT: one bar per slot of the cluster, scrolling.
+--   dark teal (notarized) and teal (rooted), or pink if skipped. The cards move one
+--   place left when the next leader takes over. The followed validator's cards are orange.
+--   TX / SLOT: one bar per slot of the cluster, a step left with each slot.
 --   Validator panel: its stake, rank, an epoch ring, the countdown to its next
 --   window; while it is leader, its transactions and fees as they come.
 -- SCHEDULE
@@ -29,12 +29,14 @@
 -- phone over Bluetooth: "f" ten times a second (the slot and the TPS, 9 bytes over
 -- Bluetooth), "w" for a leader window whenever it changes, "info" every 2 s.
 --
--- Speed. on_tick runs every 30 ms, and the screen costs about 0.45 us a pixel plus
--- ~1 ms an area redrawn (the whole app area takes ~35 ms: CHANGELOG 2.1.0). So
--- nothing is redrawn unless it changed: what moves on its own (the slot being made,
--- the spinning icons) lives in small canvases of its own, big canvases are redrawn
--- only when their picture moves, labels, colours and LEDs are set only when they
--- change, and nothing is built in a tick that a message didn't make stale.
+-- Speed. on_tick runs every 30 ms, and on the badge the screen costs ~1.4 us a pixel
+-- redrawn (measured with this app: 1.0 to 1.7 by view) plus ~1 ms an area, all on the
+-- one CPU the app shares. So nothing is redrawn unless it changed and nothing big
+-- moves: what changes on its own (the slot being made, the spinning icons) lives in
+-- small canvases of its own, redrawn at most ten times a second; big canvases are
+-- redrawn once a slot or when their picture changes, never to animate a slide; labels,
+-- colours and LEDs are set only when they change, and countdowns show tenths only in
+-- their last 10 s. Each view stays under ~200,000 pixels a second (~70% of the CPU).
 --
 -- Numbers: a badge has 32-bit integers and 32-bit floats. Slot numbers (469 million)
 -- stay integers; only differences between slots ever become floats.
@@ -70,8 +72,9 @@ local function grouped(n)
   local out = s:reverse():gsub("(%d%d%d)", "%1 "):reverse()
   return (out:gsub("^ ", ""))
 end
-local function dur(sec)
+local function dur(sec)        -- tenths only in the last 10 s: each change redraws the label
   if sec >= 60 then return string.format("%dm%02ds", sec // 60, math.floor(sec % 60)) end
+  if sec >= 10 then return string.format("%ds", math.floor(sec)) end
   return string.format("%.1fs", sec)
 end
 
@@ -198,10 +201,12 @@ for k = 1, 5 do
   cards[k] = c
 end
 
--- transactions per slot: one bar per slot, 5 px a slot, scrolling as slots are made
+-- transactions per slot: one bar per slot, 5 px a slot, a step left as each slot is
+-- made. Drawn once a slot: on the badge the screen costs ~1.4 us a pixel, and sliding
+-- this 17,000-pixel strip a pixel at a time took half of the LIVE view's CPU.
 local CHART_Y, CHART_H, SLOT_W = 104, 54, 5
 local chart = V("live", C(0, CHART_Y, 320, CHART_H, { color = "bg" }))
-local chartMax, chartKey = 1000, nil
+local chartMax, chartKey, chartTop = 1000, nil, nil
 V("live", L(6, CHART_Y + 1, "TX / SLOT", { size = 12, color = "dim" }))
 local maxL = V("live", L(240, CHART_Y + 1, "", { size = 12, color = "dim", w = 74, align = "right" }))
 
@@ -263,8 +268,8 @@ end
 ---------------------------------------------------------------------------------
 -- SCHEDULE view, after the Firedancer dashboard's leader schedule: the next leaders
 -- on top, the current one in a teal frame, then the past ones, newest first, each with
--- its four slots (state, transactions, fees, tips, time, compute used). The list slides
--- down as each leader takes over. UP / DOWN pick a slot, one at a time, and a panel at
+-- its four slots (state, transactions, fees, tips, time, compute used). The list moves
+-- down a card as each leader takes over. UP / DOWN pick a slot, one at a time, and a panel at
 -- the bottom shows it in full; UP past the newest slot, or BACK, follows live again.
 -- The cards' backgrounds are one canvas, redrawn only when the list moves; each card's
 -- state icons are a small canvas of their own (a spinning icon redraws 9 x 48 pixels);
@@ -424,27 +429,15 @@ local function animated(w, live_s)
   return live_s <= w.s + 3 or w.cells:find("[01]") ~= nil
 end
 
-local carCur, slide = nil, 0     -- the current window the carousel shows; px still to slide
+-- When the next leader takes over the cards move one place left at once: sliding the
+-- whole strip over a few frames cost a fifth of the LIVE view's screen time.
+local cellsAt = -1               -- when the moving cells were last drawn (10 times a second)
 local function drawCarousel(now, live_s, f)
   local cur = est - est % 4
-  if carCur and cur ~= carCur then             -- the next leader took over: slide
-    slide = slide + PITCH * ((cur - carCur) // 4)
-    if slide > PITCH * 2 or slide < 0 then slide = 0 end
-  end
-  carCur = cur
-  if slide > 0 then                            -- fast ease-out: few frames of the whole strip moving
-    slide = slide * 0.4
-    if slide < 2 then slide = 0 end
-  end
-  local off = math.floor(slide + 0.5)
+  local step = now // 100 ~= cellsAt
+  if step then cellsAt = now // 100 end
   for k = 1, 5 do
     local card, w = cards[k], winAt(cur + (k - 3) * 4)
-    local x = (k - 1) * PITCH + off
-    if card.x ~= x then
-      card.x = x
-      card.cv:pos(x, CAR_Y) card.cells:pos(x + 4, CAR_Y + 20)
-      card.name:pos(x + 4, CAR_Y + 4) card.tx:pos(x + 4, CAR_Y + 46)
-    end
     local isCur, ours = k == 3, w.o == 1
     local changed = card.w ~= w or card.ver ~= w.ver or card.cur ~= isCur
     if changed then                            -- the frame, the name, the tx: only when they change
@@ -461,7 +454,7 @@ local function drawCarousel(now, live_s, f)
       card.tx:text(w.tx > 0 and (big(w.tx) .. " tx") or (k > 3 and "next" or ""))
       card.tx:color(isCur and "text" or "dim")
     end
-    if changed or animated(w, live_s) or card.anim then   -- the four slots: 52 x 24 pixels
+    if changed or ((animated(w, live_s) or card.anim) and step) then   -- the four slots: 52 x 24 pixels
       card.anim = animated(w, live_s)
       local c = card.cells.o
       c:clear(ours and OURS_BG or PANEL)
@@ -470,11 +463,9 @@ local function drawCarousel(now, live_s, f)
   end
 end
 
-local function drawChart(live_s, f)
-  local shift = math.floor(f * SLOT_W)
-  local key = live_s * 8 + shift               -- redraw only when the picture moves
-  if key == chartKey then return end
-  chartKey = key
+local function drawChart(live_s)
+  if live_s == chartKey then return end        -- once a slot (new bars wait for it)
+  chartKey = live_s
   local c = chart.o
   c:clear(BG)
   local H = CHART_H
@@ -483,7 +474,7 @@ local function drawChart(live_s, f)
   local top = 0
   for k = 0, 320 // SLOT_W + 1 do
     local s = live_s - k
-    local x = 320 - k * SLOT_W - shift
+    local x = 320 - SLOT_W - k * SLOT_W
     local b = slotTx[s]
     if b then
       if b[3] then c:rect(x, 12, SLOT_W, H - 12, 0x1A0C33) end
@@ -505,7 +496,7 @@ local function drawChart(live_s, f)
     end
   end
   chartMax = math.max(500, ((top // 250) + 1) * 250)
-  maxL:text(grouped(chartMax) .. " tx")
+  if chartTop ~= chartMax then chartTop = chartMax maxL:text(grouped(chartMax) .. " tx") end
 end
 
 ---------------------------------------------------------------------------------
@@ -527,7 +518,7 @@ local function cardText(w)       -- the six columns of a card, four lines each
   return c
 end
 
-local scroll, scrollTo, slideY = 0, 0, 0
+local scroll, scrollTo = 0, 0
 local sel = nil                  -- the selected slot (UP / DOWN), nil while following live
 local schedCur = nil
 local items, total = {}, 0       -- the list, rebuilt when the current window or a window changes
@@ -568,14 +559,13 @@ local upKey = {}                 -- the countdowns' tenths, so their text change
 local function drawSchedule(now, live_s, p)
   if est == 0 then return end
   local cur = est - est % 4
-  if schedCur and cur ~= schedCur then           -- the next leader took over
+  -- The next leader took over. Following live, the list jumps (sliding it redrew all
+  -- 64,000 pixels of it five times over, most of this view's CPU on the badge);
+  -- reading the past, it stays where it is.
+  if schedCur and cur ~= schedCur and (scrollTo ~= 0 or sel) then
     local k = (cur - schedCur) // 4
     if k > 0 and k < 4 then
-      if scrollTo == 0 and not sel then
-        slideY = math.max(slideY - k * (CARD_H + GAP), -2 * (CARD_H + GAP))
-      else                                       -- reading the past: keep it where it is
-        scroll, scrollTo = scroll + k * (CARD_H + GAP), scrollTo + k * (CARD_H + GAP)
-      end
+      scroll, scrollTo = scroll + k * (CARD_H + GAP), scrollTo + k * (CARD_H + GAP)
     end
   end
   schedCur = cur
@@ -599,16 +589,12 @@ local function drawSchedule(now, live_s, p)
     end
   end
   if scrollTo > maxS then scrollTo = maxS end
-  -- fast ease-outs: a moving list redraws all of it, so it moves in as few frames as look smooth
-  if slideY ~= 0 then
-    slideY = slideY * 0.4
-    if slideY > -2 then slideY = 0 end
-  end
+  -- a fast ease-out: a moving list redraws all of it, so it moves in as few frames as look smooth
   if scroll ~= scrollTo then
     scroll = scroll + (scrollTo - scroll) * 0.55
     if math.abs(scrollTo - scroll) < 2 then scroll = scrollTo end
   end
-  local off = math.floor(slideY - scroll + 0.5)
+  local off = math.floor(-scroll + 0.5)
   local moved = off ~= lastOff
   lastOff = off
 
@@ -872,7 +858,6 @@ local function onWin(m)
     local x = d[j]
     if x[1] >= 2 then slotTx[s + j - 1] = { x[2] - x[3], x[3], ours, x[1] == 5 } end
   end
-  chartKey = nil
   schedDirty = true
 end
 
@@ -1094,7 +1079,7 @@ function on_tick(ms)
 
   if view == "live" then
     drawCarousel(now, live_s, f)
-    drawChart(live_s, f)
+    drawChart(live_s)
   elseif view == "schedule" then
     drawSchedule(now, live_s, p)
   else

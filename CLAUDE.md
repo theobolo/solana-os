@@ -36,8 +36,17 @@ refused every server-mediated call, `ws` included (`"denied"`).
   only differences become floats.
 - **Badge fonts** have ASCII, `°` and `•` only (no `·`). Labels wrap at their width:
   the 12 px mono font is ~7.2 px a character.
-- **Redraw cost**: ~0.45 µs a pixel + ~1 ms an area; `on_tick` is 30 ms. Redraw only
-  what changed; things that animate get a small canvas of their own.
+- **Redraw cost, on the badge**: ~1.4 µs a pixel rendered (1.0 to 1.7 by view, measured
+  2026-11-14) + ~1 ms an area, on the CPU the app and Wi-Fi share; `on_tick` is 30 ms.
+  The old 0.45 µs (CHANGELOG 2.1.0) made the simulator 3x optimistic: the app saturated
+  the CPU on the badge (watchdog every 5 s) while the simulator said ~3 ms a tick. Keep
+  each view under ~200 kpx/s: nothing big slides (jump instead), big canvases redraw
+  once a slot, small animated ones at most 10 Hz, countdowns show tenths only < 10 s.
+- **Measure on the badge**, not only in the simulator: flash the diagnostic build
+  (`sdkconfig.stats`, below) and run `top 60` (per-task CPU, LCD kpx/s, LVGL's flush
+  wait) while `key right` switches views; time Lua functions with a copy of main.lua
+  that wraps them in `sys.millis()` and prints every 2 s, sent with `tools/badgeput.py`
+  and run with `tools/badgerun.py`. Put the real main.lua back after.
 - Report what was tested where: the simulator is not the badge.
 
 ## Testing without a badge (`apps/firedancer-gui/tools/`)
@@ -85,13 +94,15 @@ cd ../worker && npx wrangler kv key put --binding FILES firedancer-gui.apk \
 ## Not yet tested on real hardware
 
 2026-11-14, Run on badge from /apps/submit (official 2.1.0, test run): the Wi-Fi path
-works (the badge's ws reaches the relay with its ticket, the relay counts it). But the
-app saturates the CPU: the task watchdog fires every 5 s (IDLE starved; `lua` and
-`taskLVGL` running), and the screen stutters. Next: flash the diagnostic build
-(`sdkconfig.stats`, console `top [seconds]` per-task CPU while `key` switches views),
-time on_tick's parts with sys.millis in a copy of main.lua (upload with `lua put`),
-and cut what each view redraws. A stray `my-app` (the editor's default) was installed
-by mistake: `lua rm my-app`.
+works (the badge's ws reaches the relay with its ticket, the relay counts it). The app
+then saturated the CPU (watchdog every 5 s, LIVE ~14 ticks/s, SCHEDULE ~8): the chart
+slid a 17 kpx canvas ~12 times a second, the schedule slid its 64 kpx list over five
+frames per leader, the carousel slid too. Fixed (chart steps once a slot, list and
+carousel jump, cells at 10 Hz, countdown tenths < 10 s): LIVE 440 -> 171 kpx/s, CPU
+~65%, 25 ticks/s; SCHEDULE 370 -> 179 kpx/s, ~69%, 25 ticks/s; VALIDATOR ~49%, 30
+ticks/s; no watchdog on the official firmware. Internal SRAM is tight while it runs
+(~37 KB free): once, with `top` started first, `label:text` failed "low on memory".
+The badge still has the app's first version `galaxy-live` on its card (`lua rm`).
 
 The Wi-Fi path (`ws` with the badge server's ticket: needs the store or a test run
 from `/apps/submit`, "Run on badge", desktop Chrome), and everything since the
@@ -134,7 +145,8 @@ bound). At the dashboard's ~450 KB/s a client costs ~50-70% of the CPU; the UI, 
 and JSON for the wanted topics get the rest. TLS buffers in internal RAM would save
 ~7 points for ~16 KB of SRAM.
 
-Test builds (separate build dirs, the badge's config untouched):
+Test builds (separate build dirs, the badge's config untouched; `sdkconfig.stats` is the
+shipped config plus run-time stats, for `top`):
 `idf.py -B build-fdbench-fast -D SDKCONFIG=build-fdbench-fast/sdkconfig -D
 "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.fdbench;sdkconfig.fdbench-fast" build`
 (quote the list: unquoted, zsh hands idf.py one argument). Flash at 230400 baud: the
