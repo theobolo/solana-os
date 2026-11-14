@@ -136,55 +136,99 @@ $('install').onclick = async () => {
     })();
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const clean = () => buf.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-    // Send a line, wait until the console is back at its prompt and quiet. Returns what it printed.
-    const cmd = async (line, timeout = 8000) => {
-      buf = '';
-      await dev.transferOut(epOut, new TextEncoder().encode(line + '\r\n'));
-      const t0 = performance.now();
-      for (;;) {
-        await sleep(15);
-        const c = clean();
-        if (/\n[^\n]*sol>\s*$/.test(c) && performance.now() - lastRx > 60) return c;
-        if (performance.now() - t0 > timeout) throw new Error('le badge ne répond pas (« ' + line.slice(0, 40) + ' »)');
-      }
+    const enc = new TextEncoder();
+    // In small pieces: the badge reads its console between everything else it does.
+    const send = async (text) => {
+      const b = enc.encode(text);
+      for (let o = 0; o < b.length; o += 32) { await dev.transferOut(epOut, b.subarray(o, o + 32)); await sleep(4); }
     };
+    // Send a line and wait for the console's next prompt. Returns what the command printed.
+    // The badge may print other lines after its prompt (logs), so the prompt is looked for
+    // after the echo of the line, not at the very end. `again`: safe to send twice.
+    const cmd = async (line, { timeout = 12000, again = true } = {}) => {
+      let seen = '';
+      for (let attempt = 0; attempt < (again ? 2 : 1); attempt++) {
+        buf = '';
+        await send(line + '\r\n');
+        const tail = line.slice(-12), t0 = performance.now();
+        let nudged = false;
+        for (;;) {
+          await sleep(12);
+          const c = clean(), quietFor = performance.now() - lastRx;
+          const i = tail ? c.lastIndexOf(tail) : 0;
+          if (i >= 0) {
+            const rest = c.slice(i + tail.length), j = rest.indexOf('sol>');
+            if (j >= 0 && /[\r\n]/.test(rest.slice(0, j)) && quietFor > 30) return rest.slice(0, j);
+          }
+          // the echo got mixed with other output: any prompt after a new line, once it is quiet
+          if (quietFor > 500 && /[\r\n][^\r\n]*sol>/.test(c)) return c;
+          const waited = performance.now() - t0;
+          if (!nudged && waited > timeout / 2) { nudged = true; await send('\r\n'); }   // the line's end may have been lost
+          if (waited > timeout) break;
+        }
+        seen = clean();
+      }
+      const e = new Error('le badge ne répond pas à « ' + line.slice(0, 36) + ' »');
+      e.seen = seen;
+      throw e;
+    };
+    const said = (out) => out.replace(/\s+/g, ' ').trim().slice(0, 160);
 
     log('Badge connecté, console…');
     let up = false;
     for (let i = 0; i < 12 && !up; i++) {                 // the badge may be booting
-      try { await cmd('', 1500); up = true; } catch { /* again */ }
+      try { await cmd('', { timeout: 1500, again: false }); up = true; } catch { /* again */ }
     }
-    if (!up) throw new Error("pas de console : le badge est-il allumé et sur l'écran d'accueil ?");
+    if (!up) throw new Error("pas de console : le badge est-il allumé ?");
     const inf = await cmd('info');
     const ver = (inf.match(/(\d+\.\d+\.\d+)/) || [])[1];
     if (ver) log('Solana OS ' + ver);
     await cmd('open home');                                // close the app if it runs
+    await sleep(1500);                                     // let it close and the launcher draw
 
     const files = [['app.json', await (await fetch('/app/app.json')).text()], ['main.lua', await (await fetch('/app/main.lua')).text()]];
-    const total = files.reduce((n, f) => n + f[1].length, 0);
-    let sent = 0;
+    const total = files.reduce((n, f) => n + enc.encode(f[1]).length, 0);
+    let done = 0;
     prog.hidden = false;
-    for (const [name, text] of files) {
-      const bytes = new TextEncoder().encode(text);
+    const put = async (name, bytes) => {
       let out = await cmd(`lua put ${APP} ${name} begin`);
-      if (/no microSD|running|installing|usage|can't/.test(out)) throw new Error(out.split('\n').slice(1, -1).join(' ').trim());
+      if (/no microSD|running|installing|usage|can't/.test(out)) { const e = new Error(said(out)); e.fatal = /no microSD/.test(out); throw e; }
       for (let o = 0; o < bytes.length; o += 96) {
         const b64 = btoa(String.fromCharCode(...bytes.subarray(o, o + 96)));
-        out = await cmd(`lua put ${APP} ${name} ${b64}`);
-        if (/bad base64|limited|write failed|first/.test(out)) throw new Error(name + ' : ' + out.split('\n').slice(1, -1).join(' ').trim());
-        sent += Math.min(96, bytes.length - o);
-        prog.value = sent / total;
+        out = await cmd(`lua put ${APP} ${name} ${b64}`, { again: false });   // sent twice it would be written twice
+        if (/bad base64|limited|write failed|first|usage|Unrecognized/.test(out)) throw new Error(said(out));
+        prog.value = (done + o + 96) / total;
       }
-      out = await cmd(`lua put ${APP} ${name} end`);
+      out = await cmd(`lua put ${APP} ${name} end`, { again: false });
       const m = out.match(/: (\d+) bytes/);
-      if (!m || Number(m[1]) !== bytes.length) throw new Error(name + ' : ' + out.split('\n').slice(1, -1).join(' ').trim());
+      if (!m || Number(m[1]) !== bytes.length) throw new Error('taille reçue : ' + said(out));
+    };
+    const sums = {};
+    for (const [name, text] of files) {
+      const bytes = enc.encode(text);
+      sums[name] = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((x) => x.toString(16).padStart(2, '0')).join('');
+      for (let tries = 1; ; tries++) {
+        try { await put(name, bytes); break; } catch (e) {
+          if (e.fatal || tries >= 3) throw e;
+          log(`${name} : nouvel essai (${e.message})`);
+          try { await cmd('', { timeout: 3000, again: false }); } catch {}
+        }
+      }
+      done += bytes.length;
       log(`${name} : ${bytes.length} octets`, 'ok');
     }
+    // what the card holds must be what we sent
+    const check = await cmd(`lua sums ${APP}`);
+    for (const name in sums) {
+      if (!check.toLowerCase().includes(sums[name] + ' ')) throw new Error(`${name} est arrivé abîmé sur le badge : relance l'installation`);
+    }
+    log('Fichiers vérifiés (SHA-256)', 'ok');
     await cmd(`lua run ${APP}`);
     log("Installée et lancée. Passe à l'étape 2.", 'ok');
     reading = false;
   } catch (e) {
     log('Erreur : ' + (e.message || e), 'err');
+    if (e.seen !== undefined) log('Console du badge : ' + JSON.stringify(e.seen.slice(-400)));
   } finally {
     try { await dev?.close(); } catch {}
     btn.disabled = false;
