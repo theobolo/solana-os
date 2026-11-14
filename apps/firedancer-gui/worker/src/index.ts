@@ -9,7 +9,9 @@
 //
 // The object follows the feed only while a badge is connected (and 30 s after the
 // last one left), so it costs nothing when nobody is watching: the first badge
-// waits a second or two for the leader schedule.
+// waits a second or so for the leader schedule. What the dashboard doesn't replay
+// (our last blocks, the vote account, the slots on screen) is kept in the object's
+// storage across those pauses (core.ts snapshot).
 //
 //   cd apps/firedancer-gui/worker && npx wrangler deploy
 //
@@ -65,7 +67,7 @@ export default {
 // The relay object's name. A running object keeps the code it started with while sockets
 // hold it open, even across deploys: change this with any change to the relay so the next
 // connection gets an object running the new code (the old one stops once its sockets go).
-const RELAY_NAME = 'relay-5';
+const RELAY_NAME = 'relay-6';
 
 function sameText(a: string, b: string) {   // compared in full, whatever differs
   let d = 0;
@@ -75,22 +77,35 @@ function sameText(a: string, b: string) {   // compared in full, whatever differ
 
 export class RelayDO {
   private clients = new Set<WebSocket>();
+  private waiting = new Set<WebSocket>();   // came before the feed: the history is still to send
   private relay: Relay;
   private up: WebSocket | null = null;
   private timers: ReturnType<typeof setInterval>[] = [];
   private idle: ReturnType<typeof setTimeout> | null = null;
   private delay = 1000;
   private lastFrame = '';
+  private saved: string | undefined;         // the last snapshot, in storage too
 
-  constructor(_state: DurableObjectState, private env: Env) {
+  constructor(private state: DurableObjectState, private env: Env) {
     this.relay = this.fresh();
+    state.blockConcurrencyWhile(async () => {
+      this.saved = await state.storage.get<string>('snapshot');
+      if (this.saved) this.relay.restore(this.saved);
+    });
   }
 
   private fresh() {
     const r = new Relay(this.env.IDENTITY, (m) => this.broadcast(m), (fn, ms) => setTimeout(fn, ms), console.log);
     r.upstream = 'idle';
     r.vote = this.relay?.vote ?? null;       // keep what we know of the vote account
+    if (this.saved) r.restore(this.saved);
     return r;
+  }
+
+  private save() {
+    if (!this.relay.est) return;
+    this.saved = this.relay.snapshot();
+    this.state.storage.put('snapshot', this.saved).catch((e) => console.log('storage: ' + String(e)));
   }
 
   private broadcast(m: object) {
@@ -106,6 +121,11 @@ export class RelayDO {
     this.timers = [
       setInterval(() => {
         if (!this.clients.size || !this.relay.est) return;
+        if (this.waiting.size && this.relay.epochs.size) {
+          const h = this.relay.history(16).map((w) => JSON.stringify(w));
+          for (const c of this.waiting) { try { for (const s of h) c.send(s); } catch { this.clients.delete(c); } }
+          this.waiting.clear();
+        }
         for (const w of this.relay.changedWindows()) this.broadcast(w);
         const s = JSON.stringify(this.relay.frame());
         if (s === this.lastFrame) return;
@@ -114,6 +134,7 @@ export class RelayDO {
       }, Number(this.env.FRAME_MS || 100)),
       setInterval(() => this.broadcast(this.relay.info()), 2000),
       setInterval(() => this.relay.prune(), 10_000),
+      setInterval(() => this.save(), 60_000),
       setInterval(() => this.relay.readVote(this.env.RPC_URL, this.env.VOTE), 5 * 60_000),
     ];
   }
@@ -124,6 +145,7 @@ export class RelayDO {
     const up = this.up;
     this.up = null;
     try { up?.close(1000, 'idle'); } catch {}
+    this.save();
     this.relay = this.fresh();               // the schedule comes again on the next connect
   }
 
@@ -160,15 +182,16 @@ export class RelayDO {
     this.start();
     const gone = () => {
       this.clients.delete(server);
+      this.waiting.delete(server);
       if (!this.clients.size && !this.idle) this.idle = setTimeout(() => { this.idle = null; if (!this.clients.size) this.stop(); }, 30_000);
     };
     server.addEventListener('close', gone);
     server.addEventListener('error', gone);
     server.send(JSON.stringify(this.relay.info()));
-    if (this.relay.est) {
+    if (this.relay.est && this.relay.epochs.size) {
       for (const w of this.relay.history(16)) server.send(JSON.stringify(w));
       server.send(JSON.stringify(this.relay.frame()));
-    }
+    } else this.waiting.add(server);
     return new Response(null, { status: 101, webSocket: client });
   }
 }

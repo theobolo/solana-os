@@ -40,6 +40,7 @@ export class Relay {
   slots = new Map<number, { st: number; ok: number; fail: number; fee: number; ms: number; base: number; tip: number; cu: number }>();
   stakes = new Map<string, bigint>();               // identity -> stake (lamports), this epoch
   countries = new Map<string, string>();            // identity -> country code (gossip)
+  private peersRead = new Set<string>();            // identities a peers message told us about
   private sentW = new Map<number, string>();        // window start -> what we last sent of it
   sent = new Map<number, 'ok' | 'skip'>();           // what badges heard about each of our slots
   skipped = new Set<number>();                       // our slots skipped for good
@@ -81,9 +82,18 @@ export class Relay {
   handleRaw(text: string) {
     const m = /^\{"topic":"([a-z_]+)","key":"([a-z_]+)"/.exec(text.length > 96 ? text.slice(0, 96) : text);
     if (m && !Relay.WANTED.has(m[1] + '/' + m[2])) return;
+    // After the first full list, peers/update is hundreds of gossip changes a second
+    // ("info":null) about peers we know: only a name, or a peer we never read, matters.
+    if (m && m[1] === 'peers' && !text.includes('"info":{') && this.knownPeers(text)) return;
     let j: unknown;
     try { j = JSON.parse(text); } catch { return; }
     this.handle(j);
+  }
+
+  /** Whether every peer a peers message names was read before. */
+  private knownPeers(text: string) {
+    for (const p of text.matchAll(/"identity_pubkey":"(\w+)"/g)) if (!this.peersRead.has(p[1])) return false;
+    return true;
   }
 
   private epochOf(s: number) { for (const e of this.epochs.values()) if (s >= e.start && s <= e.end) return e; }
@@ -116,6 +126,7 @@ export class Relay {
     else if (topic === 'peers' && key === 'update') {
       for (const p of [...(value.add ?? []), ...(value.update ?? [])]) {
         const id = p.identity_pubkey ?? p.identity;
+        if (id) this.peersRead.add(id);
         if (id && p.info?.name) this.names.set(id, p.info.name);
         if (id && p.gossip?.country_code) this.countries.set(id, String(p.gossip.country_code).slice(0, 2).toUpperCase());
       }
@@ -228,6 +239,30 @@ export class Relay {
 
   /** Forget slots the carousel no longer shows. Call now and then. */
   prune() { for (const s of this.slots.keys()) if (s < this.est - 400) this.slots.delete(s); }
+
+  /** What a relay starting again can't get back from the dashboard, which replays only the
+   *  slots around the tip: our last blocks (until our next window, hours maybe), the slots
+   *  the carousel shows, the vote account (8 s of RPC). As JSON, for storage. */
+  snapshot(): string {
+    return JSON.stringify({
+      at: Date.now(), identity: this.identity, ourBlocks: this.ourBlocks, skipped: [...this.skipped],
+      sent: [...this.sent], slots: [...this.slots].filter(([s]) => s >= this.est - 80),
+      vote: this.vote && { ...this.vote, stake: String(this.vote.stake) },
+    });
+  }
+
+  /** Takes back a snapshot() of the same validator: everything but the slots, which only
+   *  while they can still be on screen (and their states haven't moved on since). */
+  restore(json: string) {
+    const x = JSON.parse(json);
+    if (this.pinned ? x.identity !== this.identity : !x.identity) return;
+    this.identity = x.identity;                      // so the dashboard's identity_key keeps what follows
+    this.ourBlocks = x.ourBlocks;
+    this.skipped = new Set(x.skipped);
+    this.sent = new Map(x.sent);
+    if (x.vote) this.vote = { ...x.vote, stake: BigInt(x.vote.stake) };
+    if (Date.now() - x.at < 2 * MINUTE) this.slots = new Map(x.slots);
+  }
 
   /** Commission, stake and delinquency: the GUI's peers topic leaves them at 0. From RPC
    *  (getVoteAccounts), else from Stakewiz: public RPC nodes refuse some clouds' addresses. */

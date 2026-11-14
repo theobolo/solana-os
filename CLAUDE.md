@@ -78,8 +78,9 @@ cd ../worker && npx wrangler kv key put --binding FILES firedancer-gui.apk \
   has it. Never commit it.
 - The Android signing key (`firedancer-gui.jks`, passwords in `build.sh`) was sent
   to the owner as a file; updates must be signed with it.
-- An old Worker `galaxy-live-relay` still exists on the account (the app's first
-  name). Delete it only if the owner says so.
+- The old Worker `galaxy-live-relay` (the app's first name) was deleted on
+  2026-11-14, with its `galaxy-live.apk`. The KV namespace it shared with this relay
+  is now titled `firedancer-gui-files` (same id).
 
 ## Not yet tested on real hardware
 
