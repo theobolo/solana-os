@@ -1,0 +1,10 @@
+# fdbench test build only (not the badge's firmware):
+#   idf.py -B build-fdbench -D SDKCONFIG=build-fdbench/sdkconfig \
+#     -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.fdbench" build
+# A bigger TCP receive window (sdkconfig.defaults has 2880: two packets in flight),
+# lwIP's buffers in PSRAM (SPIRAM_TRY_ALLOCATE_WIFI_LWIP), and each task's CPU time.
+CONFIG_LWIP_TCP_WND_DEFAULT=32768
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=32
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y

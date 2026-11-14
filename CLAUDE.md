@@ -99,19 +99,34 @@ messages a second; each message is its own zstd frame (windows up to 2 MB), so a
 client can decompress a message's first bytes, read its topic and skip the rest.
 The topics the relay reads are ~96 KB/s on the wire.
 
-Step 1, in progress: `fdbench [seconds]` (console) connects and discards, printing
-KB/s each second, to see whether the chip keeps up (TLS at 424 KB/s). Built in the
-cloud with ESP-IDF v6.0.1 (`idf.py build`); `solana_os-fdbench.bin` and
-`ota_data_initial.bin` were sent to the owner.
+Step 1, done (2026-11-14, owner's badge, hotel Wi-Fi at -77 dBm, 2.4 GHz):
+`fdbench [seconds]` (console) connects with `compress-zstd`, reads and discards, and
+prints each second KB/s, messages, heap, RSSI, the TCP window and (in a build with
+FreeRTOS run-time stats) how busy the CPU was and its three busiest tasks.
 
-1. Back the badge up first (16 MB, the only way back):
-   `esptool --chip esp32c5 -p PORT -b 460800 read_flash 0 0x1000000 badge-backup.bin`
-2. Flash the test firmware to the first app slot and boot from it:
-   `esptool --chip esp32c5 -p PORT -b 460800 write_flash 0xF000 ota_data_initial.bin 0x20000 solana_os-fdbench.bin`
-   (partition table: `partitions.csv`; never write the bootloader or the table).
-3. On the console (115200 baud; `tools/badge.py`): `fdbench 30`, with Wi-Fi joined;
-   `cloud hangup` first if it says there is no memory.
-4. To go back: `esptool ... write_flash 0 badge-backup.bin`.
+| Build | Steady rate | CPU busy | Internal RAM free |
+|---|---|---|---|
+| `sdkconfig.defaults` (TCP window 2880) | ~255 KB/s, ~350 msgs/s: falls behind | not measured | 132 KB |
+| + `sdkconfig.fdbench` (window 32 KB) | keeps up (~410-450 KB/s) | 85-100% (fdbench ~50, wifi ~20, tcpip ~13) | 128 KB |
+| + `sdkconfig.fdbench-fast` (Wi-Fi/lwIP IRAM, A-MPDU RX) | keeps up | 70-80% (fdbench ~50, wifi ~11, tcpip ~8) | ~92 KB |
+
+The Mac on the same Wi-Fi got ~410 KB/s, ~530 msgs/s. The 2880-byte window was the
+limit (2880 B per ~11 ms round trip to Cloudflare). What's left is the fdbench task
+itself (TLS and copying every message whole into PSRAM): a client must skip unwanted
+messages without storing them, and the UI gets the remaining 20-30%.
+
+Test builds (separate build dirs, the badge's config untouched):
+`idf.py -B build-fdbench-fast -D SDKCONFIG=build-fdbench-fast/sdkconfig -D
+"SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.fdbench;sdkconfig.fdbench-fast" build`
+(quote the list: unquoted, zsh hands idf.py one argument). Flash at 230400 baud: the
+CH340 drops reads at 460800. `tools/badge.py` doesn't read during `sleep`: for long
+output, read the port in a loop (opening it resets the badge on macOS).
+
+Backup: `~/badge-backup/badge-backup.bin` on the owner's Mac (16 MB, sha256
+0cfe48b2...455f). It shows the official 2.1.0 in `ota_1` (booted) and 2.0.0 in `ota_0`;
+the test builds go to `ota_0` (`write_flash 0xF000 ota_data_initial.bin 0x20000 ...`).
+Back to the official firmware: write the backup's 8 KB at 0xF000 (the otadata, which
+boots `ota_1`); the whole file only if something else broke.
 
 If the badge keeps up: port `core.ts` to C behind a Lua module (streaming zstd, a
 streaming JSON reader for the 370 KB epoch and the multi-MB peers messages), so

@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_app_desc.h"
+#include "esp_wifi.h"
 #include "bsp.h"
 #include "console.h"
 #include "os.h"
@@ -362,6 +363,60 @@ int console_stream_read(void *buf, size_t n, int timeout_ms)
 // badge server's connection if the heap is short.
 static volatile bool s_fdbench;
 
+#if CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
+// Since the last call: the share of the CPU each task had (one core: they add up to
+// 100%), as "busy X%: the three busiest". The first call only takes the counters.
+static void fdbench_cpu(char *out, size_t n)
+{
+    static TaskStatus_t was[40], now[40];
+    static UBaseType_t nwas;
+    static configRUN_TIME_COUNTER_TYPE twas;
+    configRUN_TIME_COUNTER_TYPE t;
+    UBaseType_t k = uxTaskGetSystemState(now, 40, &t);
+    out[0] = 0;
+    if (nwas && t > twas) {
+        const char *name[3] = { 0 };
+        unsigned top[3] = { 0 };
+        unsigned idle = 0;
+        for (UBaseType_t i = 0; i < k; i++) {
+            configRUN_TIME_COUNTER_TYPE d = now[i].ulRunTimeCounter;
+            for (UBaseType_t j = 0; j < nwas; j++) {
+                if (was[j].xHandle == now[i].xHandle) {
+                    d -= was[j].ulRunTimeCounter;
+                    break;
+                }
+            }
+            unsigned pct = (unsigned)(d * 100 / (t - twas));
+            if (!strncmp(now[i].pcTaskName, "IDLE", 4)) {
+                idle += pct;
+                continue;
+            }
+            for (int r = 0; r < 3; r++) {
+                if (pct > top[r]) {
+                    for (int q = 2; q > r; q--) {
+                        top[q] = top[q - 1];
+                        name[q] = name[q - 1];
+                    }
+                    top[r] = pct;
+                    name[r] = now[i].pcTaskName;
+                    break;
+                }
+            }
+        }
+        snprintf(out, n, "  cpu busy %u%%: %s %u%%, %s %u%%, %s %u%%", 100 - (idle > 100 ? 100 : idle),
+                 name[0] ? name[0] : "-", top[0], name[1] ? name[1] : "-", top[1], name[2] ? name[2] : "-", top[2]);
+    }
+    memcpy(was, now, sizeof(TaskStatus_t) * k);
+    nwas = k;
+    twas = t;
+}
+#else
+static void fdbench_cpu(char *out, size_t n)
+{
+    out[0] = 0;
+}
+#endif
+
 static void fdbench_task(void *arg)
 {
     int secs = (int)(intptr_t)arg;
@@ -376,6 +431,8 @@ static void fdbench_task(void *arg)
     }
     int64_t now = esp_timer_get_time();
     printf("fdbench: open in %d ms, reading for %d s\n", (int)((now - t0) / 1000), secs);
+    char cpu[96];
+    fdbench_cpu(cpu, sizeof(cpu));
     int64_t tick = now, end = now + (int64_t)secs * 1000000;
     size_t bytes = 0, biggest = 0;
     uint32_t total_kb = 0;
@@ -397,10 +454,14 @@ static void fdbench_task(void *arg)
         }
         now = esp_timer_get_time();
         if (now - tick >= 1000000) {
-            printf("fdbench: %2d s  %4u KB/s  %4d msgs/s (%d zstd)  biggest %u KB  heap %u KB free, %u KB internal\n",
+            int rssi = 0;
+            esp_wifi_sta_get_rssi(&rssi);
+            fdbench_cpu(cpu, sizeof(cpu));
+            printf("fdbench: %2d s  %4u KB/s  %4d msgs/s (%d zstd)  biggest %u KB  heap %u KB free, %u KB internal  rssi %d  tcp wnd %u%s\n",
                    ++n, (unsigned)(bytes / 1000), msgs, zstd, (unsigned)(biggest / 1000),
                    (unsigned)(esp_get_free_heap_size() / 1024),
-                   (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
+                   (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+                   rssi, (unsigned)CONFIG_LWIP_TCP_WND_DEFAULT, cpu);
             total_kb += bytes / 1000;
             bytes = 0;
             msgs = zstd = 0;

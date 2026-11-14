@@ -1,0 +1,8 @@
+# fdbench test build, on top of sdkconfig.fdbench: the Wi-Fi and lwIP receive paths in
+# IRAM and A-MPDU aggregation on receive (all off in sdkconfig.defaults, to save SRAM).
+CONFIG_ESP_WIFI_IRAM_OPT=y
+CONFIG_ESP_WIFI_RX_IRAM_OPT=y
+CONFIG_LWIP_IRAM_OPTIMIZATION=y
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
+CONFIG_ESP_WIFI_RX_BA_WIN=16
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
