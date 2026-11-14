@@ -2,19 +2,17 @@
 // Cloudflare: worker/src/index.ts): it takes the Firedancer GUI websocket's
 // messages and builds the badge-sized ones.
 //
-//   {"t":"f", ...}     the leader carousel: the 2 next leader windows, the current one
-//                      and the 2 before, each [start, leader name, 1 if ours, 4 state
-//                      digits, tx, [ok, fail] x 4, fees in lamports, ms per slot], plus
-//                      the estimated slot and the
-//                      cluster's TPS (ok, fail). A whole picture each time.
+//   {"t":"f", "e", "ok", "fail"}   ten times a second: the estimated slot and the
+//                      cluster's TPS (successful, failed). Nothing else: every window's
+//                      details come in "w" messages, only when they change.
 //   {"t":"slot", ...}  each of our slots, as soon as it completes or is skipped
 //   {"t":"info", ...}  stake, rank, epoch, blocks, skips, our next 24 windows, last 16 blocks
-//   {"t":"w", ...}     one leader window in full, for the schedule view: start, leader name,
-//                      1 if ours, its stake (SOL) and country, and for each of its 4 slots
-//                      [state, tx, fees (lamports, base + priority), tips (lamports), ms, CU %].
-//                      Sent whenever it changes (the current window, the two before and the two
-//                      next), and
-//                      the last ones to a client that connects.
+//   {"t":"w", ...}     one leader window in full: start, leader name, 1 if ours, its stake
+//                      (SOL) and country, and for each of its 4 slots [state, tx, failed tx,
+//                      fees (lamports, base + priority), tips (lamports), ms, CU %]. Sent
+//                      whenever it changes (the two windows before the current one, the
+//                      current one and the two next), and the last 16 and the next 2 to a
+//                      client that connects.
 //
 // Slot state digits: 0 future, 1 being made, 2 completed, 3 notarized / confirmed,
 // 4 rooted / finalized, 5 skipped.
@@ -127,25 +125,9 @@ export class Relay {
     }
   }
 
+  /** Ten times a second: where the cluster is and its TPS. */
   frame() {
-    const est = this.est, cur = est - (est % 4);
-    const rows = [];
-    for (let w = cur + 8; w >= cur - 8; w -= 4) {            // 2 next, current, 2 before
-      let cells = '', tx = 0, fee = 0, ms = 0, timed = 0;
-      const per: number[] = [];                              // ok, fail for each of the 4 slots
-      for (let s = w; s < w + 4; s++) {
-        const x = this.slots.get(s);
-        cells += x ? x.st : s <= est ? 1 : 0;
-        tx += x ? x.ok + x.fail : 0;
-        per.push(x?.ok ?? 0, x?.fail ?? 0);
-        if (x && x.st !== 5) fee += x.fee;
-        if (x && x.ms > 0) { ms += x.ms; timed++; }
-      }
-      const id = this.leaderOf(w);
-      // fees: lamports the window's blocks collected (fees, priority fees, tips); then ms a slot
-      rows.push([w, this.nameOf(id), id === this.identity ? 1 : 0, cells, tx, per, Math.min(fee, 2147483647), timed ? Math.round(ms / timed) : 0]);
-    }
-    return { t: 'f', e: est, ok: Math.round(this.tpsOk), fail: Math.round(this.tpsFail), r: rows };
+    return { t: 'f', e: this.est, ok: Math.round(this.tpsOk), fail: Math.round(this.tpsFail) };
   }
 
   info() {
@@ -183,7 +165,7 @@ export class Relay {
     const d = [];
     for (let s = w; s < w + 4; s++) {
       const x = this.slots.get(s);
-      d.push(x ? [x.st, x.ok + x.fail, x.base, x.tip, x.ms, x.cu] : [s <= this.est ? 1 : 0, 0, 0, 0, 0, 0]);
+      d.push(x ? [x.st, x.ok + x.fail, x.fail, x.base, x.tip, x.ms, x.cu] : [s <= this.est ? 1 : 0, 0, 0, 0, 0, 0, 0]);
     }
     const stake = id ? this.stakes.get(id) ?? 0n : 0n;
     return { t: 'w', s: w, n: this.nameOf(id), o: id === this.identity ? 1 : 0, k: Number(stake / LAMPORTS),
@@ -201,10 +183,10 @@ export class Relay {
     return out;
   }
 
-  /** The last n windows before the current one, oldest first: for a client that connects. */
+  /** The last n windows, the current one and the two next, oldest first: for a client that connects. */
   history(n: number) {
     const cur = this.est - (this.est % 4), out = [];
-    for (let w = cur - 4 * n; w <= cur; w += 4) out.push(this.window(w));
+    for (let w = cur - 4 * n; w <= cur + 8; w += 4) out.push(this.window(w));
     return out;
   }
 

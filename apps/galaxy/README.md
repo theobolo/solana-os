@@ -33,7 +33,7 @@ Le leader schedule, sur le modèle de celui du dashboard Firedancer ([animation]
 - **Le défilement** : la liste glisse vers le bas à chaque nouveau leader.
 - **La navigation** ([animation](preview/navigation.gif)) : HAUT et BAS sélectionnent un slot, un par un, dans les 8 dernières fenêtres (BAS remonte le temps). Le slot est surligné, sa carte calée en haut de la liste, et un panneau en bas l'affiche en grand : statut, transactions, frais et tips en SOL (6 décimales), durée, compute. La liste ne bouge plus tant qu'un slot est sélectionné. HAUT après le slot le plus récent, ou RETOUR, revient au direct.
 
-Les tableaux viennent des messages `w` du relais (voir `core.ts`) : une fenêtre complète, envoyée à chaque changement, compactée sur 84 octets pour le Bluetooth.
+Les tableaux viennent des messages `w` du relais (voir `core.ts`) : une fenêtre complète, envoyée à chaque changement, compactée sur 92 octets pour le Bluetooth.
 
 ## Vue GALAXY
 
@@ -128,6 +128,40 @@ PUBLIC_URL=https://galaxy.ton-domaine.xyz PORT=8080 bun server.ts
 ```
 
 Il prend les mêmes réglages en variables d'environnement. `DEV_NO_TICKET=1` désactive la vérification du ticket, pour les tests en local uniquement.
+
+## Performances
+
+L'app vise le maximum que permet le badge : `on_tick` tourne toutes les 30 ms (environ 33 images par seconde, fixé par le firmware). L'écran coûte environ 0,45 µs par pixel plus environ 1 ms par zone redessinée ; toute la zone de l'app prend environ 35 ms (CHANGELOG 2.1.0). Une image n'est donc tenue que si ce qu'elle redessine coûte moins de 30 ms. Ce qui en découle :
+
+- **Rien n'est redessiné sans avoir changé.** Les étiquettes, couleurs et positions sont mises en cache, et les LED ne sont écrites que quand leur couleur change.
+- **Ce qui bouge tout seul a son propre petit canevas** :
+  - les cases de slots du carrousel (52×24) ;
+  - les icônes d'état de chaque carte du leader schedule (9×48).
+
+  La roue qui tourne ou la case qui se remplit redessine quelques centaines de pixels, pas la carte ni la liste.
+- **Le fond de la liste** du leader schedule n'est redessiné que quand la liste bouge ou change de forme, pas à chaque message.
+- **Le cadre du panneau Galaxy** est fait de 4 fines bandes : quand il clignote, seules les bandes sont redessinées.
+- **Les glissements** (carrousel, liste) convergent en 4 à 5 images : une liste qui bouge se redessine en entier, donc le moins d'images possible.
+- **Aucune table ni chaîne n'est construite dans un tick** si aucun message ne l'a rendue périmée : moins de travail pour le ramasse-miettes.
+- **Le protocole** : les images à 10 Hz ne portent que le slot et le TPS (9 octets en Bluetooth au lieu de 184). Les détails de chaque fenêtre (`w`, 92 octets) ne partent que quand ils changent.
+
+Mesures avec un simulateur de l'écran, sur les mêmes 45 s de vraies données, avec le modèle de coût ci-dessus :
+
+| Vue | Écran par tick, avant → après | Ticks > 25 ms | Instructions Lua par tick |
+|---|---|---|---|
+| LIVE | 12,3 → 10,1 ms | 1 % → 1 % | 7 200 → 5 600 |
+| SCHEDULE (direct) | 18,5 → 7,2 ms | 65 % → 17 % | 8 600 → 3 500 |
+| SCHEDULE (navigation) | 16,8 → 4,8 ms | 58 % → 14 % | 7 100 → 2 900 |
+| GALAXY | 3,8 → 3,2 ms | 0 % | 5 800 → 1 200 |
+
+Autres gains mesurés :
+
+- **Mémoire Lua allouée** : 635 → 95 Ko/s.
+- **Pire callback** : 30 700 → 10 700 instructions (le maximum autorisé est 200 000).
+- **Écritures LED** : 8 → moins de 2 par tick.
+- **Trafic Bluetooth** : 2,4 → 0,9 Ko/s.
+
+Les ticks au-dessus de 25 ms qui restent sont les images de glissement, où toute la liste bouge.
 
 ## Testé
 

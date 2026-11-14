@@ -90,7 +90,7 @@ Bun.serve<{ badge: string }>({
     open(ws) {
       clients.add(ws);
       ws.send(JSON.stringify(relay.info()));
-      if (relay.est) { for (const w of relay.history(8)) ws.send(JSON.stringify(w)); ws.send(JSON.stringify(relay.frame())); }
+      if (relay.est) { for (const w of relay.history(16)) ws.send(JSON.stringify(w)); ws.send(JSON.stringify(relay.frame())); }
     },
     close(ws) { clients.delete(ws); },
     message() {},

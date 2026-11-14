@@ -59,37 +59,25 @@
 // The badge app (main.lua, unpackMsg) reads these.
 function packMsg(m) {
   const cap = (v, max) => Math.max(0, Math.min(max, Math.round(v || 0)));
-  if (m.t === 'f' && Array.isArray(m.r) && m.r.length === 5) {
-    const b = new Uint8Array(184), d = new DataView(b.buffer);
+  if (m.t === 'f') {
+    const b = new Uint8Array(9), d = new DataView(b.buffer);
     b[0] = 70;                                       // "F"
-    d.setUint32(1, m.e, true); d.setUint16(5, cap(m.ok, 65535), true); d.setUint16(7, cap(m.fail, 65535), true);
-    m.r.forEach((r, j) => {
-      const o = 9 + j * 35;
-      b[o] = r[2] ? 1 : 0;
-      let cells = 0;
-      for (let n = 0; n < 4; n++) cells |= (Number(r[3][n]) & 15) << (n * 4);
-      d.setUint16(o + 1, cells, true);
-      for (let n = 0; n < 8; n++) d.setUint16(o + 3 + n * 2, cap((r[5] || [])[n], 65535), true);
-      d.setUint32(o + 19, cap(r[6], 2147483647), true);   // fees, lamports
-      d.setUint16(o + 23, cap(r[7], 65535), true);        // ms per slot
-      const name = String(r[1]).replace(/[^\x20-\x7e]/g, '').slice(0, 10);
-      for (let n = 0; n < name.length; n++) b[o + 25 + n] = name.charCodeAt(n);
-    });
+    d.setUint32(1, cap(m.e, 4294967295), true); d.setUint16(5, cap(m.ok, 65535), true); d.setUint16(7, cap(m.fail, 65535), true);
     return b;
   }
   if (m.t === 'w' && Array.isArray(m.d) && m.d.length === 4) {
-    const b = new Uint8Array(84), d = new DataView(b.buffer);
+    const b = new Uint8Array(92), d = new DataView(b.buffer);
     b[0] = 87;                                       // "W"
     d.setUint32(1, m.s, true); b[5] = m.o ? 1 : 0; d.setUint32(6, cap(m.k, 2147483647), true);
     const cc = String(m.c || '').replace(/[^A-Z]/g, '').slice(0, 2).padEnd(2, ' ');
     b[10] = cc.charCodeAt(0); b[11] = cc.charCodeAt(1);
     const name = String(m.n).replace(/[^\x20-\x7e]/g, '').slice(0, 16);
     for (let n = 0; n < name.length; n++) b[12 + n] = name.charCodeAt(n);
-    m.d.forEach((x, j) => {
-      const o = 28 + j * 14;
-      b[o] = cap(x[0], 15); d.setUint16(o + 1, cap(x[1], 65535), true);
-      d.setUint32(o + 3, cap(x[2], 2147483647), true); d.setUint32(o + 7, cap(x[3], 2147483647), true);
-      d.setUint16(o + 11, cap(x[4], 65535), true); b[o + 13] = cap(x[5], 255);
+    m.d.forEach((x, j) => {                          // state, tx, failed, fees, tips, ms, CU %
+      const o = 28 + j * 16;
+      b[o] = cap(x[0], 15); d.setUint16(o + 1, cap(x[1], 65535), true); d.setUint16(o + 3, cap(x[2], 65535), true);
+      d.setUint32(o + 5, cap(x[3], 2147483647), true); d.setUint32(o + 9, cap(x[4], 2147483647), true);
+      d.setUint16(o + 13, cap(x[5], 65535), true); b[o + 15] = cap(x[6], 255);
     });
     return b;
   }

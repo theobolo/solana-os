@@ -28,39 +28,17 @@ final class Pack {
     static byte[] pack(JSONObject m) {
         String t = m.optString("t");
         if (t.equals("f")) {
-            JSONArray r = m.optJSONArray("r");
-            if (r == null || r.length() != 5) return null;
-            ByteBuffer b = ByteBuffer.allocate(184).order(ByteOrder.LITTLE_ENDIAN);
+            ByteBuffer b = ByteBuffer.allocate(9).order(ByteOrder.LITTLE_ENDIAN);
             b.put(0, (byte) 'F');
-            b.putInt(1, (int) m.optLong("e"));
+            b.putInt(1, (int) Math.max(0, Math.min(4294967295L, Math.round(m.optDouble("e", 0)))));
             b.putShort(5, (short) cap(m.optDouble("ok", 0), 65535));
             b.putShort(7, (short) cap(m.optDouble("fail", 0), 65535));
-            for (int j = 0; j < 5; j++) {
-                JSONArray w = r.optJSONArray(j);
-                if (w == null) return null;
-                int o = 9 + j * 35;
-                b.put(o, (byte) (truthy(w.opt(2)) ? 1 : 0));
-                String cells = w.optString(3, "");
-                int c = 0;
-                for (int n = 0; n < 4; n++) {
-                    int d = n < cells.length() ? Character.digit(cells.charAt(n), 10) : 0;
-                    c |= (Math.max(d, 0) & 15) << (n * 4);
-                }
-                b.putShort(o + 1, (short) c);
-                JSONArray per = w.optJSONArray(5);
-                for (int n = 0; n < 8; n++) b.putShort(o + 3 + n * 2, (short) cap(per == null ? 0 : per.optDouble(n, 0), 65535));
-                b.putInt(o + 19, cap(w.optDouble(6, 0), 2147483647L));    // fees, lamports
-                b.putShort(o + 23, (short) cap(w.optDouble(7, 0), 65535)); // ms per slot
-                String name = w.optString(1, "").replaceAll("[^\\x20-\\x7e]", "");
-                if (name.length() > 10) name = name.substring(0, 10);
-                for (int n = 0; n < name.length(); n++) b.put(o + 25 + n, (byte) name.charAt(n));
-            }
             return b.array();
         }
         if (t.equals("w")) {
             JSONArray d = m.optJSONArray("d");
             if (d == null || d.length() != 4) return null;
-            ByteBuffer b = ByteBuffer.allocate(84).order(ByteOrder.LITTLE_ENDIAN);
+            ByteBuffer b = ByteBuffer.allocate(92).order(ByteOrder.LITTLE_ENDIAN);
             b.put(0, (byte) 'W');
             b.putInt(1, (int) m.optLong("s"));
             b.put(5, (byte) (truthy(m.opt("o")) ? 1 : 0));
@@ -73,15 +51,16 @@ final class Pack {
             String name = m.optString("n", "").replaceAll("[^\\x20-\\x7e]", "");
             if (name.length() > 16) name = name.substring(0, 16);
             for (int n = 0; n < name.length(); n++) b.put(12 + n, (byte) name.charAt(n));
-            for (int j = 0; j < 4; j++) {
+            for (int j = 0; j < 4; j++) {               // state, tx, failed, fees, tips, ms, CU %
                 JSONArray x = d.optJSONArray(j);
-                int o = 28 + j * 14;
+                int o = 28 + j * 16;
                 b.put(o, (byte) cap(x == null ? 0 : x.optDouble(0, 0), 15));
                 b.putShort(o + 1, (short) cap(x == null ? 0 : x.optDouble(1, 0), 65535));
-                b.putInt(o + 3, cap(x == null ? 0 : x.optDouble(2, 0), 2147483647L));
-                b.putInt(o + 7, cap(x == null ? 0 : x.optDouble(3, 0), 2147483647L));
-                b.putShort(o + 11, (short) cap(x == null ? 0 : x.optDouble(4, 0), 65535));
-                b.put(o + 13, (byte) cap(x == null ? 0 : x.optDouble(5, 0), 255));
+                b.putShort(o + 3, (short) cap(x == null ? 0 : x.optDouble(2, 0), 65535));
+                b.putInt(o + 5, cap(x == null ? 0 : x.optDouble(3, 0), 2147483647L));
+                b.putInt(o + 9, cap(x == null ? 0 : x.optDouble(4, 0), 2147483647L));
+                b.putShort(o + 13, (short) cap(x == null ? 0 : x.optDouble(5, 0), 65535));
+                b.put(o + 15, (byte) cap(x == null ? 0 : x.optDouble(6, 0), 255));
             }
             return b.array();
         }

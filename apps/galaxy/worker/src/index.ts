@@ -65,7 +65,7 @@ export default {
 // The relay object's name. A running object keeps the code it started with while sockets
 // hold it open, even across deploys: change this with any change to the relay so the next
 // connection gets an object running the new code (the old one stops once its sockets go).
-const RELAY_NAME = 'relay-3';
+const RELAY_NAME = 'relay-4';
 
 function sameText(a: string, b: string) {   // compared in full, whatever differs
   let d = 0;
@@ -166,7 +166,7 @@ export class RelayDO {
     server.addEventListener('error', gone);
     server.send(JSON.stringify(this.relay.info()));
     if (this.relay.est) {
-      for (const w of this.relay.history(8)) server.send(JSON.stringify(w));
+      for (const w of this.relay.history(16)) server.send(JSON.stringify(w));
       server.send(JSON.stringify(this.relay.frame()));
     }
     return new Response(null, { status: 101, webSocket: client });
