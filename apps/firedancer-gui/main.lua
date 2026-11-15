@@ -1,6 +1,7 @@
 -- Firedancer on the badge: a badge-sized take on the Firedancer dashboard, fed by one
--- (gui.firedancer.io by default) through a relay. It follows the dashboard's own
--- validator, or the one the relay is told to. LEFT / RIGHT change view.
+-- (gui.firedancer.io by default) through a relay. It follows one validator: the
+-- dashboard's own unless another is chosen (VALIDATOR, or a slot in SCHEDULE, then
+-- SELECT), which the badge keeps. LEFT / RIGHT change view; the strip on top says which.
 --
 -- LIVE
 --   Leader carousel: five leader windows, the past on the left, the future on the
@@ -14,20 +15,24 @@
 -- SCHEDULE
 --   The leader schedule after the dashboard's: the next leaders, the current one in
 --   a teal frame, then the past ones, each with its four slots (state, transactions,
---   fees, tips, time, compute used). UP / DOWN pick a slot; a panel shows it in full.
---   UP past the newest, or BACK, follows live again.
+--   fees, tips, time, compute used). UP / DOWN pick a slot: the list stops there and a
+--   panel shows the slot in full; SELECT follows its leader. UP past the newest, BACK,
+--   another view or a minute without a key, and it follows live again.
 -- VALIDATOR
---   The followed validator's next windows on a 10-minute timeline, a big countdown,
---   and its last 16 blocks as bars (transactions each).
+--   The followed validator: name, rank, version, stake, commission, skip rate, blocks
+--   made this epoch, its next windows on a 10-minute timeline, the countdown to the
+--   next one, its last 16 blocks (transactions each). SELECT: a list to follow another
+--   (the default, the last ones chosen, the 20 biggest by stake). Needs Wi-Fi.
 --
 -- LEDs: while the validator is leader the six top LEDs fill slot by slot (orange to
 -- teal, red for a skip), then flash and fade. The side LEDs breathe as its next
 -- window comes and, in "full" mode, tick with every slot of the cluster.
--- SELECT: LED mode (full / validator only / off). CANCEL: exit.
+-- SELECT in LIVE: LED mode (full / validator only / off). CANCEL: exit.
 --
 -- Data: the relay (server.ts or worker/), over Wi-Fi (a WebSocket) or through a
 -- phone over Bluetooth: "f" ten times a second (the slot and the TPS, 9 bytes over
--- Bluetooth), "w" for a leader window whenever it changes, "info" every 2 s.
+-- Bluetooth), "w" for a leader window whenever it changes, "info" every 2 s. Over
+-- Wi-Fi the badge says whom it follows ("follow", core.ts); a phone relays the default.
 --
 -- Speed. on_tick runs every 30 ms, and on the badge the screen costs ~1.4 us a pixel
 -- redrawn (measured with this app: 1.0 to 1.7 by view) plus ~1 ms an area, all on the
@@ -37,6 +42,8 @@
 -- redrawn once a slot or when their picture changes, never to animate a slide; labels,
 -- colours and LEDs are set only when they change, and countdowns show tenths only in
 -- their last 10 s. Each view stays under ~200,000 pixels a second (~70% of the CPU).
+-- Labels wrap at their width, and the fonts aren't monospaced: names are cut where they
+-- fit (fit). The badge holds 128 objects: this app uses 125.
 --
 -- Numbers: a badge has 32-bit integers and 32-bit floats. Slot numbers (469 million)
 -- stay integers; only differences between slots ever become floats.
@@ -78,6 +85,28 @@ local function dur(sec)        -- tenths only in the last 10 s: each change redr
   return string.format("%.1fs", sec)
 end
 
+-- The badge's fonts' widths, " " to "~" (main/assets/sol_*.c, a character's code - 48
+-- each), so a name can be cut where it fits: a label wraps what is wider than its width.
+local ADV = {
+  [12] = "55677875556756567677777777557777888887788577798878877889777565675777776775575977776767787766567",
+  [14] = "34598;93446835369588888788338987;:9::98::4898=;;9;998:9>988464784788884883373<888857587;7765458",
+  [20] = "557=<?=4668;5858<8<<<<<;<<55;<;:@>=??<<??6;=;C??=?==<>=D=<<686:<6:<;<;7<;55:5A;;<<7:7;:@::9757<",
+}
+local function fit(s, size, px)  -- the longest start of s (ASCII) that is at most px wide
+  local a, w = ADV[size], 0
+  for i = 1, #s do
+    local c = s:byte(i)
+    w = w + ((c >= 32 and c <= 126) and (a:byte(c - 31) - 48) or (c >= 0x80 and c < 0xC0) and 0 or 9)   -- the bullet: 9
+    if w > px then return s:sub(1, i - 1) end
+  end
+  return s
+end
+
+-- Internal RAM is tight while the app runs (~37 KB free, measured): a call that would
+-- leave the badge under 32 KB raises "low on memory". A toast, or a list's text, can
+-- wait; the app shouldn't stop for it.
+local function toast(s) pcall(ui.toast, s) end
+
 -- Objects that touch the screen only when something changes.
 local function L(x, y, text, o)
   local l = ui.label(x, y, text, o)
@@ -113,6 +142,20 @@ local blocks = {}                -- the validator's last 16 slots: {tx, skipped}
 local slotTx = {}                -- slot -> {ok, fail, ours, skipped}, for the chart
 local tickAt = -1000             -- when the cluster last moved to a new slot
 local tpsOk, tpsFail = 0, 0
+
+-- The followed validator: the relay's default (the dashboard's own) unless one was
+-- chosen (SELECT in VALIDATOR, or on a slot in SCHEDULE). The choice is kept on the card.
+local fol = {
+  id = storage.get("follow"),                  -- the chosen identity, nil for the default
+  recent = storage.get("recent"),              -- the last ones chosen: { {id, name}, ... }
+  defName = storage.get("defname"),            -- the default one's name
+  cur = nil, def = true,                       -- whom the relay says we follow, and if it's its default
+  asked = nil, n = 0,                          -- a choice on its way to the relay: its number
+}
+if type(fol.id) ~= "string" then fol.id = nil end
+if type(fol.recent) ~= "table" then fol.recent = {} end
+if type(fol.defName) ~= "string" then fol.defName = nil end
+local sock, sockOpen = nil, false
 
 -- Leader windows, from the relay's "w" messages: start -> record
 --   { s = start, n = name, o = 1 if ours, k = stake (SOL), c = country,
@@ -153,7 +196,7 @@ end
 -- Header
 
 ui.bg("bg")
-ui.rect(0, 0, ui.W, 2, { color = TEAL })
+local pager = C(0, 0, 320, 2, { color = BORDER })   -- the top strip, a part a view: the current one in teal
 ui.image(6, 5, {                 -- a flame, for Firedancer
   "......t......",
   ".....tt......",
@@ -176,7 +219,13 @@ ui.label(24, 4, "FIREDANCER", { size = 20 })
 local dot = R(156, 12, 6, 6, { color = "dim", radius = 3 })
 ui.label(166, 9, "@" .. OWNER, { size = 12, color = "aqua" })
 local tpsL = L(216, 3, "", { size = 20, w = 62, align = "right" })
-ui.label(282, 10, "TPS", { size = 12, color = "dim" })
+local tpsU = L(282, 10, "TPS", { size = 12, color = "dim" })
+local statusL = L(216, 9, "", { size = 12, color = "orange", w = 96, align = "right" })   -- instead, while no data comes
+statusL:show(false)
+local function status(text)      -- nil: data comes, show the TPS
+  tpsL:show(text == nil) tpsU:show(text == nil) statusL:show(text ~= nil)
+  if text then statusL:text(fit(text, 12, 96)) end
+end
 local DOTC = {}                  -- the live dot's pulse, 12 steps
 for i = 0, 11 do DOTC[i] = mix(0x0A4A40, TEAL, (math.sin(i / 12 * 2 * math.pi) + 1) / 2) end
 
@@ -269,11 +318,14 @@ end
 -- SCHEDULE view, after the Firedancer dashboard's leader schedule: the next leaders
 -- on top, the current one in a teal frame, then the past ones, newest first, each with
 -- its four slots (state, transactions, fees, tips, time, compute used). The list moves
--- down a card as each leader takes over. UP / DOWN pick a slot, one at a time, and a panel at
--- the bottom shows it in full; UP past the newest slot, or BACK, follows live again.
+-- down a card as each leader takes over. UP / DOWN pick a slot, one at a time: the list
+-- stops there (new leaders wait) and a panel at the bottom shows the slot in full;
+-- SELECT follows its leader. UP past the newest slot, BACK, a minute without a key or
+-- another view, and it follows live again.
 -- The cards' backgrounds are one canvas, redrawn only when the list moves; each card's
 -- state icons are a small canvas of their own (a spinning icon redraws 9 x 48 pixels);
--- the text is labels, a column of four lines each.
+-- the text is labels, a column of four lines each. Three cards' labels are enough: no
+-- more fit on screen.
 
 local FD_CARD, FD_BORDER, FD_NOW, FD_NOWBG = 0x121821, 0x252B35, 0x1FC9A9, 0x0D2126
 local FD_TEXT, FD_DIM, FD_UPBG, FD_RAIL_UP, FD_RAIL_PAST = 0xD0D4DA, 0x777B84, 0x0B0F16, 0x2A3240, 0x1B2433
@@ -291,8 +343,8 @@ local COLS = {   -- x, width, align, title, title colour (the dashboard's)
 local ICON_X = 80
 
 local sch = V("schedule", C(0, LIST_Y, 320, LIST_H, { color = "bg" }))
-local pool = {}                  -- what the cards on screen show (at most 4 at once)
-for i = 1, 4 do
+local pool = {}                  -- what the cards on screen show
+for i = 1, 3 do
   local c = { icons = V("schedule", C(ICON_X, LIST_Y, 9, 48)),
               name = V("schedule", L(0, 0, "", { size = 14, color = FD_TEXT, w = 156 })),
               meta = V("schedule", L(0, 0, "", { size = 12, color = FD_DIM, w = 140, align = "right" })), cols = {},
@@ -313,14 +365,14 @@ for _, col in ipairs(COLS) do
 end
 
 -- The selected slot in full (UP / DOWN pick one), over the bottom of the list
-local PANEL_H = 50
+local PANEL_H = 64
 local PANEL_Y = ui.H - PANEL_H
 local panel = {}
 local function P(o) panel[#panel + 1] = o return V("schedule", o) end
-P(R(3, PANEL_Y, 314, PANEL_H, { color = FD_NOW, radius = 6 }))
-P(R(4, PANEL_Y + 1, 312, PANEL_H - 2, { color = 0x0A161A, radius = 5 }))
-local pTitle = P(L(12, PANEL_Y + 4, "", { size = 12, color = FD_TEXT, w = 230 }))
-local pState = P(L(200, PANEL_Y + 4, "", { size = 12, color = FD_NOW, w = 108, align = "right" }))
+P(R(3, PANEL_Y, 314, PANEL_H, { color = 0x0A161A, radius = 6, border = FD_NOW }))
+local pTitle = P(L(12, PANEL_Y + 4, "", { size = 12, color = FD_TEXT, w = 210 }))
+local pState = P(L(222, PANEL_Y + 4, "", { size = 12, color = FD_NOW, w = 86, align = "right" }))
+P(L(12, PANEL_Y + 48, "PAUSED" .. DOT .. "SELECT follow leader" .. DOT .. "BACK live", { size = 12, color = "dim", w = 300 }))
 local PCOLS = {   -- x, width, title, title colour
   { 12, 44, "TX", 0x61AD6D }, { 60, 74, "FEES SOL", 0x45B5CE }, { 138, 74, "TIPS SOL", 0x1ED4A1 },
   { 216, 44, "MS", 0xB7B8B9 }, { 264, 44, "CU", 0xCE9BFC },
@@ -376,21 +428,49 @@ end
 ---------------------------------------------------------------------------------
 -- VALIDATOR view
 
-local gTitle = V("validator", L(8, 28, "LEADER WINDOWS" .. DOT .. "NEXT 10 MIN", { size = 12, color = TEAL, w = 304 }))
-local TL_Y = 44
-local tl = V("validator", C(0, TL_Y, 320, 40, { color = "bg" }))
-local tlKey = nil
-for m = 0, 10, 2 do
-  V("validator", ui.label(m == 10 and 290 or (10 + m * 30 - 6), TL_Y + 42, m == 0 and "now" or (m .. "m"), { size = 12, color = "dim" }))
+-- Who it is, its numbers, its leader windows over the next 10 minutes, the countdown to
+-- the next one, its last 16 blocks. SELECT: follow another validator.
+local vv = {}                    -- its objects
+vv.name = V("validator", L(8, 26, "", { size = 20, color = OURS_TXT, w = 210 }))
+V("validator", ui.label(222, 32, "SELECT change", { size = 12, color = "dim", w = 90, align = "right" }))
+vv.sub = V("validator", L(8, 48, "", { size = 12, color = "dim", w = 304 }))
+vv.val = {}
+-- BLOCKS last and widest: "14830/17072", made so far this epoch / its slots in the epoch
+for k, c in ipairs({ { 8, 60, "STAKE" }, { 70, 80, "COMMISSION" }, { 156, 54, "SKIPPED" }, { 216, 98, "BLOCKS" } }) do
+  V("validator", ui.label(c[1], 64, c[3], { size = 12, color = TEAL_DARK, w = c[2] }))
+  vv.val[k] = V("validator", L(c[1], 76, "-", { size = 14, w = c[2] }))
 end
-V("validator", ui.label(8, 104, "NEXT WINDOW", { size = 12, color = "dim" }))
-local gCd = V("validator", L(8, 116, "", { size = 32, color = TEAL, w = 180 }))
-local gSlot = V("validator", L(190, 104, "", { size = 12, color = "dim", w = 122, align = "right" }))
-local gStats = V("validator", L(190, 120, "", { size = 14, w = 122, align = "right" }))
-local gStats2 = V("validator", L(100, 138, "", { size = 12, color = "dim", w = 212, align = "right" }))
-V("validator", ui.label(8, 156, "LAST 16 BLOCKS" .. DOT .. "TRANSACTIONS", { size = 12, color = TEAL }))
-local BAR_Y = 170
-local bars = V("validator", C(0, BAR_Y, 320, 46, { color = "bg" }))
+V("validator", ui.label(8, 97, "LEADER WINDOWS" .. DOT .. "NEXT 10 MIN", { size = 12, color = TEAL, w = 304 }))
+local TL_Y = 111
+vv.tl = V("validator", C(0, TL_Y, 320, 26, { color = "bg" }))
+V("validator", ui.label(4, TL_Y + 26, "now", { size = 12, color = "dim" }))
+V("validator", ui.label(150, TL_Y + 26, "5m", { size = 12, color = "dim", w = 20, align = "center" }))
+V("validator", ui.label(282, TL_Y + 26, "10m", { size = 12, color = "dim", w = 34, align = "right" }))
+V("validator", ui.label(8, 155, "NEXT WINDOW", { size = 12, color = "dim" }))
+vv.cd = V("validator", L(8, 167, "", { size = 32, color = TEAL, w = 156 }))
+vv.slot = V("validator", L(8, 202, "", { size = 12, color = "dim", w = 156 }))
+V("validator", ui.label(168, 155, "LAST 16 BLOCKS", { size = 12, color = "dim", w = 144 }))
+vv.BAR_H = 44
+vv.bars = V("validator", C(168, 170, 144, vv.BAR_H, { color = "bg" }))
+
+-- Choosing the validator (SELECT in VALIDATOR): a list over the view. Its rows are two
+-- labels of ten lines (a label a row would take twenty of the badge's 128 objects).
+local pick = { open = false, i = 1, top = 1, items = {}, list = nil, Y = 46, ROWS = 10, LINE = 14 }
+pick.objs = {
+  R(0, 24, 320, ui.H - 24, { color = BG }),
+  L(8, 28, "FOLLOW A VALIDATOR", { size = 12, color = TEAL, w = 200 }),
+  L(8, 202, "SELECT follow" .. DOT .. "BACK close", { size = 12, color = "dim", w = 304 }),
+}
+pick.hi = R(4, pick.Y, 312, pick.LINE, { color = 0x22324A })
+pick.names = L(10, pick.Y, "", { size = 14, w = 196 })
+pick.right = L(150, pick.Y, "", { size = 14, color = "dim", w = 162, align = "right" })
+pick.count = L(212, 28, "", { size = 12, color = "dim", w = 100, align = "right" })
+for _, k in ipairs({ "hi", "names", "right", "count" }) do pick.objs[#pick.objs + 1] = pick[k] end
+function pick.show(b)
+  pick.open = b
+  for _, o in ipairs(pick.objs) do o:show(b) end
+end
+pick.show(false)
 
 local view = "live"
 local function showView(v)
@@ -398,6 +478,9 @@ local function showView(v)
   for name, list in pairs(views) do
     for _, o in ipairs(list) do o:show(name == v) end
   end
+  local c = pager.o
+  for k, name in ipairs(ORDER) do c:rect((k - 1) * 107, 0, 106, 2, name == v and TEAL or BORDER) end
+  c:rect(106, 0, 1, 2, BG) c:rect(213, 0, 1, 2, BG)
 end
 showView("live")
 
@@ -449,7 +532,7 @@ local function drawCarousel(now, live_s, f)
       local bw = math.floor((CW - 8) * math.min(w.tx, 2400) / 2400)
       c:rect(4, CH - 6, CW - 8, 2, PANEL_HI)
       if bw > 0 then c:rect(4, CH - 6, bw, 2, ours and OURS or TEAL) end
-      card.name:text(w.n:sub(1, 7))
+      card.name:text(fit(w.n, 12, CW - 4))
       card.name:color(ours and OURS_TXT or (isCur and "text" or "dim"))
       card.tx:text(w.tx > 0 and (big(w.tx) .. " tx") or (k > 3 and "next" or ""))
       card.tx:color(isCur and "text" or "dim")
@@ -520,15 +603,16 @@ end
 
 local scroll, scrollTo = 0, 0
 local sel = nil                  -- the selected slot (UP / DOWN), nil while following live
-local schedCur = nil
+local frozen = nil               -- while one is: the window that was current then (the list stays as it was)
+local keyAt = 0                  -- the last key, to let go after a minute
 local items, total = {}, 0       -- the list, rebuilt when the current window or a window changes
 local itemsCur, itemsVer = nil, nil
 local shape = ""                 -- what the backgrounds depend on: each card's start and colours
-local lastOff, bgShape, bgSel = nil, nil, nil
+local lastOff, bgShape, bgSel, bgCur = nil, nil, nil, nil
 local schedDirty = true          -- a window's data changed: labels and icons to check
 
 local function buildItems()
-  local cur = est - est % 4
+  local cur = frozen or (est - est % 4)
   if cur == itemsCur and winVer == itemsVer then return end
   itemsCur, itemsVer = cur, winVer
   items = {}
@@ -556,19 +640,11 @@ local function iconOf(st, s, live_s, spin, j)
 end
 
 local upKey = {}                 -- the countdowns' tenths, so their text changes 10 times a second
+-- Following live, the list jumps a card as the next leader takes over (sliding it redrew
+-- all 64,000 pixels of it five times over, most of this view's CPU on the badge).
 local function drawSchedule(now, live_s, p)
   if est == 0 then return end
   local cur = est - est % 4
-  -- The next leader took over. Following live, the list jumps (sliding it redrew all
-  -- 64,000 pixels of it five times over, most of this view's CPU on the badge);
-  -- reading the past, it stays where it is.
-  if schedCur and cur ~= schedCur and (scrollTo ~= 0 or sel) then
-    local k = (cur - schedCur) // 4
-    if k > 0 and k < 4 then
-      scroll, scrollTo = scroll + k * (CARD_H + GAP), scrollTo + k * (CARD_H + GAP)
-    end
-  end
-  schedCur = cur
   buildItems()
   local maxS = math.max(0, total - LIST_H + (sel and PANEL_H or 0))
   local selIt, selJ = nil, nil
@@ -597,10 +673,11 @@ local function drawSchedule(now, live_s, p)
   local off = math.floor(-scroll + 0.5)
   local moved = off ~= lastOff
   lastOff = off
+  local visH = LIST_H - (selIt and PANEL_H or 0)   -- what the panel leaves of the list
 
   -- 1. the cards' backgrounds: only when the list moved, its shape changed or the selection did
-  if moved or shape ~= bgShape or sel ~= bgSel then
-    bgShape, bgSel = shape, sel
+  if moved or shape ~= bgShape or sel ~= bgSel or cur ~= bgCur then
+    bgShape, bgSel, bgCur = shape, sel, cur
     local c = sch.o
     c:clear(BG)
     for _, it in ipairs(items) do
@@ -610,8 +687,8 @@ local function drawSchedule(now, live_s, p)
           c:rect(2, y, 3, it.h - 2, FD_RAIL_UP)
           c:rect(8, y, 306, it.h - 2, FD_UPBG)
         else
-          local w, isNow = it.w, it.kind == "now"
-          local ours = w.o == 1
+          local w = it.w
+          local isNow, ours = it.kind == "now" and w.s == cur, w.o == 1   -- paused, it may be past now
           c:rect(2, y, 3, it.h, isNow and FD_NOW or FD_RAIL_PAST)
           c:rect(8, y, 306, it.h, isNow and FD_NOW or (ours and OURS or FD_BORDER))
           c:rect(9, y + 1, 304, it.h - 2, isNow and FD_NOWBG or (ours and OURS_BG or FD_CARD))
@@ -632,18 +709,18 @@ local function drawSchedule(now, live_s, p)
   for _, it in ipairs(items) do
     local y = it.y + off
     local sy = LIST_Y + y
-    if y < LIST_H and y + it.h > 0 then
+    if y < visH and y + it.h > 0 then
       local w = it.w
       if it.kind == "up" then
         upN = upN + 1
         local u = ups[upN]
         local t = ((w.s - est) - p) * sd / 1000
-        local tenths = t > 0 and math.floor(t * 10) or -1
+        local tenths = t > 0 and math.floor(t * 10) or (w.s + 3 >= live_s and -1 or -2)
         if moved or schedDirty or upKey[upN] ~= tenths or u.s ~= w.s then
           upKey[upN], u.s = tenths, w.s
-          u.name:text(w.n ~= "" and w.n:sub(1, 20) or "...")
+          u.name:text(w.n ~= "" and fit(w.n, 12, 146) or "...")
           u.name:color(w.o == 1 and OURS_TXT or FD_DIM)
-          u.when:text(tostring(w.s) .. "   " .. (tenths >= 0 and string.format("%.1fs", tenths / 10) or "now"))
+          u.when:text(tostring(w.s) .. (tenths >= 0 and string.format("   %.1fs", tenths / 10) or tenths == -1 and "   now" or ""))
           u.name:pos(12, sy + 1) u.when:pos(160, sy + 1)
           u.name:show(y >= -14) u.when:show(y >= -14)
         end
@@ -652,10 +729,10 @@ local function drawSchedule(now, live_s, p)
         local c = pool[used]
         if c then
           local vis = y >= -14              -- the band above hides what is still under it
-          local isNow, ours = it.kind == "now", w.o == 1
+          local isNow, ours = it.kind == "now" and w.s == cur, w.o == 1
           if c.w ~= w or c.ver ~= w.ver or c.now ~= isNow then
             c.w, c.ver, c.now = w, w.ver, isNow
-            c.name:text(w.n:sub(1, 18))
+            c.name:text(fit(w.n, 14, 152))
             c.name:color(ours and OURS_TXT or (isNow and "text" or FD_TEXT))
             local meta = {}
             if w.k > 0 then meta[#meta + 1] = big(w.k) .. " SOL" end
@@ -702,7 +779,7 @@ local function drawSchedule(now, live_s, p)
     local w, j = selIt.w, selJ + 1
     local x = w.d[j]
     local done = x[1] >= 2 and x[1] ~= 5
-    pTitle:text(grouped(w.s + selJ) .. DOT .. w.n:sub(1, 18))
+    pTitle:text(fit(grouped(w.s + selJ) .. DOT .. w.n, 12, 206))
     pTitle:color(w.o == 1 and OURS_TXT or FD_TEXT)
     pState:text(STATE_NAME[x[1]] or "")
     pState:color(x[1] == 5 and "pink" or FD_NOW)
@@ -715,9 +792,15 @@ local function drawSchedule(now, live_s, p)
   schedDirty = false
 end
 
+local function schedLive()       -- back to following live
+  sel, frozen, scrollTo = nil, nil, 0
+end
+
 -- UP / DOWN in the schedule: slot by slot. DOWN goes back in time; UP comes forward,
--- and past the newest slot made, back to following live. BACK lets go too.
+-- and past the newest slot made, back to following live. BACK lets go too. While a slot
+-- is selected the list stays as it was: new leaders wait.
 local function schedSelect(dir, live_s)
+  if not sel then frozen = est - est % 4 end
   buildItems()
   local newest, oldest = nil, nil
   for _, it in ipairs(items) do
@@ -727,13 +810,13 @@ local function schedSelect(dir, live_s)
       if not oldest or it.w.s < oldest then oldest = it.w.s end
     end
   end
-  if not newest then return end
+  if not newest then frozen = nil return end
   if not sel then
     sel = newest
   elseif dir > 0 then
     if sel > oldest then sel = sel - 1 end
   elseif sel >= newest then
-    sel, scrollTo = nil, 0
+    schedLive()
   else
     sel = sel + 1
   end
@@ -748,36 +831,36 @@ end
 
 local function drawTimeline(now, p)
   local key = est * 4 + (now // 250) % 4       -- 4 redraws a second is plenty here
-  if key == tlKey then return end
-  tlKey = key
-  local c = tl.o
+  if key == vv.tlKey then return end
+  vv.tlKey = key
+  local c = vv.tl.o
   c:clear(BG)
-  c:rect(10, 30, 300, 1, BORDER)
-  for m = 0, 10 do c:rect(10 + m * 30, 28, 1, 5, BORDER) end
+  c:rect(10, 22, 300, 1, BORDER)
+  for m = 0, 10 do c:rect(10 + m * 30, 20, 1, m % 5 == 0 and 6 or 4, BORDER) end
   for _, w in ipairs(nextWindows()) do
     local t = ((w - est) - p) * sd / 1000
     if t >= -1 and t <= 600 then
       local x = 10 + math.floor(t / 2)          -- 600 s over 300 px
-      for yy = 0, 23, 2 do c:rect(x, 4 + yy, 3, 2, GRAD[yy * 63 // 24]) end
+      for yy = 0, 19, 2 do c:rect(x, 1 + yy, 3, 2, GRAD[yy * 63 // 20]) end
     end
   end
-  c:rect(9, 0, 2, 34, (now // 250) % 2 == 0 and TEAL or AQUA)
+  c:rect(9, 0, 2, 26, (now // 250) % 2 == 0 and TEAL or AQUA)
 end
 
-local function drawBars()
-  local c = bars.o
+local function drawBars()       -- the last 16 blocks, oldest on the left: transactions, pink if skipped
+  local c = vv.bars.o
   c:clear(BG)
-  local H = 44
+  local H = vv.BAR_H
   for i = 1, 16 do
-    local b = blocks[17 - i]                       -- oldest on the left
-    local x = 8 + (i - 1) * 19
-    c:rect(x, H - 1, 15, 1, BORDER)
+    local b = blocks[17 - i]
+    local x = (i - 1) * 9
+    c:rect(x, H - 1, 7, 1, BORDER)
     if b then
       if b[2] then
-        c:rect(x, H - 6, 15, 5, PINK)
+        c:rect(x, H - 6, 7, 5, PINK)
       else
-        local h = math.max(2, math.floor((H - 2) * math.min(b[1], 1200) / 1200))
-        for yy = 0, h - 1, 2 do c:rect(x, H - 2 - yy, 15, 2, grad(yy / (H - 2))) end
+        local h = math.max(2, math.floor((H - 2) * math.min(b[1], 1600) / 1600))
+        for yy = 0, h - 1, 2 do c:rect(x, H - 2 - yy, 7, 2, grad(yy / (H - 2))) end
       end
     end
   end
@@ -787,9 +870,31 @@ end
 -- Messages
 
 local skipPct = 0
+local cdKey = nil                -- the countdown's tenths: its text changes 10 times a second
 local function onInfo(m)
   info = m
   if type(m.sd) == "number" and m.sd > 50 then sd = m.sd end
+  local name = (type(m.name) == "string" and m.name ~= "") and m.name or "validator"
+  if type(m.id) == "string" and m.id ~= fol.cur then   -- another validator: what we knew is someone else's
+    fol.cur = m.id
+    blocks, win, cdKey = {}, { on = false, tx = 0, fee = 0, skip = false }, nil
+  end
+  if m.def ~= nil then fol.def = m.def == 1 end
+  if fol.def and m.def ~= nil and name ~= fol.defName then fol.defName = name storage.set("defname", name) end
+  if fol.asked and m.n == fol.asked and m.id then     -- the relay's answer to our choice: keep it on the card
+    fol.asked = nil
+    if fol.def then
+      fol.id = nil
+      storage.remove("follow")
+    else
+      fol.id = m.id
+      storage.set("follow", m.id)
+      local r = { { m.id, name } }
+      for _, x in ipairs(fol.recent) do if x[1] ~= m.id and #r < 4 then r[#r + 1] = x end end
+      fol.recent = r
+      storage.set("recent", r)
+    end
+  end
   stakeL:text(big(m.stake or 0) .. " SOL")
   local parts = {}
   if (m.rank or 0) > 0 then parts[#parts + 1] = "#" .. m.rank end
@@ -800,17 +905,107 @@ local function onInfo(m)
   drawRing(m.pct or 0)
   local past = (m.done or 0) + (m.skip or 0)
   skipPct = past > 0 and (m.skip or 0) * 100 / past or 0
-  gStats:text(grouped(m.done or 0) .. " / " .. grouped(m.leader or 0))
-  local ver = (type(m.ver) == "string" and m.ver ~= "") and ("v" .. m.ver .. DOT) or ""
-  gStats2:text(ver .. string.format("E%d skip %.2f%%", m.epoch or 0, skipPct))
-  local name = type(m.name) == "string" and m.name:upper() or "VALIDATOR"
-  nameL:text(name:sub(1, 17))
-  gTitle:text(name:sub(1, 16) .. DOT .. "LEADER WINDOWS, 10 MIN")
+  nameL:text(fit(name:upper(), 12, 126))
+  -- VALIDATOR
+  vv.name:text(fit(name, 20, 208))
+  local sub = {}
+  if (m.rank or 0) > 0 then sub[#sub + 1] = "rank #" .. m.rank end
+  if m.share then sub[#sub + 1] = string.format("%.2f%% of stake", m.share) end
+  if type(m.ver) == "string" and m.ver ~= "" then sub[#sub + 1] = "v" .. m.ver end
+  if type(m.cc) == "string" and m.cc ~= "" then sub[#sub + 1] = m.cc end
+  vv.sub:text(m.delinq and "DELINQUENT" or fit(table.concat(sub, DOT), 12, 304))
+  vv.sub:color(m.delinq and "pink" or "dim")
+  vv.val[1]:text(big(m.stake or 0))
+  vv.val[2]:text(m.comm and string.format("%g%%", m.comm) or "-")
+  vv.val[3]:text(string.format("%.2f%%", skipPct))
+  vv.val[3]:color(skipPct > 0 and "orange" or "text")
+  vv.val[4]:text((m.done or 0) .. "/" .. (m.leader or 0))
   if #blocks == 0 and type(m.last) == "table" then
     for i, b in ipairs(m.last) do
       if type(b) == "table" then blocks[i] = { b[1] or 0, b[2] == 1 } end
     end
     if view == "validator" then drawBars() end
+  end
+end
+
+-- Asking the relay to follow another validator: {t = "follow", id = ...}, {t = "follow",
+-- s = slot} (that slot's leader) or {t = "follow"} (its default). Its answer is an info
+-- message, then the windows again (to say which are the new one's).
+local function follow(req, name)
+  if not (sock and sockOpen) then toast("Choosing needs Wi-Fi") return false end
+  fol.n = fol.n + 1
+  req.n = fol.n
+  if not sock:send(req) then toast("Busy, try again") return false end
+  fol.asked = fol.n
+  toast("Following " .. name)
+  return true
+end
+
+-- The picker's rows: the default validator, the last ones chosen, the relay's list.
+local function pickItems()
+  local items, seen = {}, {}
+  local function add(id, name, right)
+    if id and seen[id] then return end
+    if id then seen[id] = true end
+    local on = (id == nil and fol.def) or (id ~= nil and id == fol.cur and not fol.def)
+    items[#items + 1] = { id = id, name = name, right = right, on = on }
+  end
+  add(nil, fol.defName or "Dashboard's own", "default")
+  if fol.def and fol.cur then seen[fol.cur] = true end
+  for _, x in ipairs(fol.recent) do add(x[1], x[2], "recent") end
+  if pick.list then
+    for _, x in ipairs(pick.list) do
+      if type(x) == "table" and type(x[1]) == "string" then
+        add(x[1], tostring(x[2] or "?"), big(tonumber(x[3]) or 0) .. "  " .. tostring(x[4] or ""):sub(1, 8))
+      end
+    end
+  else
+    items[#items + 1] = { name = "loading...", right = "", wait = true }
+  end
+  pick.items = items
+end
+
+local function drawPicker()
+  local n = #pick.items
+  if pick.i > n then pick.i = n end
+  if pick.i < pick.top then pick.top = pick.i end
+  if pick.i >= pick.top + pick.ROWS then pick.top = pick.i - pick.ROWS + 1 end
+  local names, rights = {}, {}
+  for k = pick.top, math.min(n, pick.top + pick.ROWS - 1) do
+    local it = pick.items[k]
+    names[#names + 1] = fit((it.on and "> " or "") .. it.name, 14, 180)
+    rights[#rights + 1] = it.right
+  end
+  pick.names:text(table.concat(names, "\n"))
+  pick.right:text(table.concat(rights, "\n"))
+  pick.hi.o:pos(4, pick.Y + (pick.i - pick.top) * pick.LINE)
+  pick.count:text(pick.i .. " / " .. n)
+end
+
+function pick.draw()             -- its text grows: low on memory, close it rather than stop
+  if not pcall(drawPicker) then pick.show(false) toast("Low on memory") end
+end
+
+local function openPicker()
+  if not (sock and sockOpen) then toast("Choosing needs Wi-Fi") return end
+  sock:send({ t = "list" })
+  pickItems()
+  pick.i, pick.top, pick.moved = 1, 1, false
+  for k, it in ipairs(pick.items) do if it.on then pick.i = k end end
+  pick.show(true)
+  pick.draw()
+end
+
+local function onList(m)
+  if type(m.l) ~= "table" then return end
+  pick.list = m.l
+  if pick.open then
+    local id = pick.items[pick.i] and pick.items[pick.i].id
+    pickItems()
+    for k, it in ipairs(pick.items) do      -- stay on the row picked, or go to the one followed
+      if (pick.moved and id and it.id == id) or (not pick.moved and it.on) then pick.i = k end
+    end
+    pick.draw()
   end
 end
 
@@ -825,8 +1020,9 @@ local function onFrame(m, now)
   local ok, fail = m.ok or 0, m.fail or 0
   if ok ~= tpsOk or fail ~= tpsFail then
     tpsOk, tpsFail = ok, fail
-    tpsL:text(grouped(ok + fail))
+    tpsL:text(ok + fail < 10000 and grouped(ok + fail) or big(ok + fail))   -- 5 digits would wrap
   end
+  if not live then status(nil) end
   live = true
 end
 
@@ -849,7 +1045,10 @@ local function onWin(m)
   if not old then
     winOrder[#winOrder + 1] = s
     table.sort(winOrder)
-    while #winOrder > WIN_KEEP do wins[table.remove(winOrder, 1)] = nil end
+    -- the oldest go, but not those a paused schedule shows (for a while)
+    while #winOrder > WIN_KEEP and not (frozen and winOrder[1] >= frozen - 40 and #winOrder < WIN_KEEP + 100) do
+      wins[table.remove(winOrder, 1)] = nil
+    end
   end
   wins[s], ghosts[s] = m, nil
   winVer = winVer + 1
@@ -943,7 +1142,8 @@ local function dispatch(m, now)
   elseif t == "w" then
     if type(m.s) == "number" and type(m.d) == "table" and #m.d == 4 and type(m.n) == "string" then onWin(m) end
   elseif t == "info" then onInfo(m)
-  elseif t == "slot" and type(m.i) == "number" and m.i >= 0 and m.i <= 3 then onSlot(m) end
+  elseif t == "slot" and type(m.i) == "number" and m.i >= 0 and m.i <= 3 then onSlot(m)
+  elseif t == "list" then onList(m) end
 end
 
 -- Wi-Fi. Asking for a socket keeps the radio busy for a few seconds, which Bluetooth
@@ -952,15 +1152,16 @@ local retry = 1000
 local connect
 connect = function()
   if sys.millis() - lastBle < 10000 then timer.after(60000, connect) return end
-  ws.open(RELAY, function(event, data)
+  sock = ws.open(RELAY .. (fol.id and ("?v=" .. fol.id) or ""), function(event, data)
     if event == "open" then
-      retry = 1000
+      retry, sockOpen = 1000, true
     elseif event == "message" then
       local m = json.decode(data)
       if type(m) == "table" then dispatch(m, sys.millis()) end
     else
+      sockOpen = false
       local refused = data == "denied" or data == "not linked" or data == "host not allowed"
-      if not live then tpsL:text(refused and "phone?" or tostring(data)) end
+      if not live then status(refused and "Wi-Fi denied" or tostring(data)) end
       timer.after(refused and 600000 or retry, connect)
       retry = math.min(retry * 2, 30000)
     end
@@ -1012,7 +1213,7 @@ if ble and ble.on() then
   local function advertise() ble.advertise({ name = "FD Badge", service = NUS, connectable = true }) end
   local served = ble.serve({ service = NUS, chars = { { uuid = RX, write = true } } }, function(event, a, b)
     if event == "open" then
-      ui.toast("Phone connected")
+      toast("Phone connected")
     elseif event == "write" and type(b) == "string" then
       local ok, m = pcall(unpackMsg, b)          -- anyone in range can write: check everything
       if ok and m then
@@ -1030,13 +1231,12 @@ end
 ---------------------------------------------------------------------------------
 -- Every tick (30 ms)
 
-local cdKey = nil                -- the countdown's tenths: its text changes 10 times a second
 function on_tick(ms)
   local now = sys.millis()
   if live and now - lastMsg > 3000 then      -- nothing for 3 s: say so, don't just freeze
     live = false
     tpsOk, tpsFail = -1, -1
-    tpsL:text("no data")
+    status("no data")
   end
   dot:color(live and DOTC[(now // 100) % 12] or 0xFF754A)
 
@@ -1070,12 +1270,19 @@ function on_tick(ms)
       elseif win.doneAt and now - win.doneAt < 4000 then
         cdSub:text("last +" .. grouped(win.tx) .. " tx") cdSub:color("green")
       else
-        cdSub:text(string.format("E%d skip %.1f%%", info and info.epoch or 0, skipPct))
+        cdSub:text(string.format("E%d skip %.2f%%", info and info.epoch or 0, skipPct))
         cdSub:color(skipPct > 0 and "orange" or "dim")
       end
     end
     frameColor(left < 10 and PULSE_P[(now // 100) % 8] or OURS)
+  elseif info and cdKey ~= "none" then             -- no window in this epoch or the next
+    cdKey = "none"
+    capL:text("NEXT LEADER") capL:color("dim")
+    cdL:text("none") cdL:color("dim")
+    cdSub:text("not in the schedule") cdSub:color("dim")
+    frameColor(OURS)
   end
+  if sel and now - keyAt > 60000 then schedLive() end   -- a paused schedule lets go after a minute
 
   if view == "live" then
     drawCarousel(now, live_s, f)
@@ -1084,40 +1291,74 @@ function on_tick(ms)
     drawSchedule(now, live_s, p)
   else
     drawTimeline(now, p)
-    if leading then gCd:text("LEADER NOW") gCd:color(OURS_TXT)
-    elseif left then gCd:text(dur(left)) gCd:color(left < 10 and "pink" or TEAL) end
-    gSlot:text(w and ("slot " .. grouped(w)) or "")
+    if leading then vv.cd:text("LEADER") vv.cd:color(OURS_TXT)
+    elseif left then vv.cd:text(dur(left)) vv.cd:color(left < 10 and "pink" or TEAL)
+    else vv.cd:text("none") vv.cd:color("dim") end
+    vv.slot:text(w and ("slot " .. grouped(w)) or (info and "not in the schedule" or ""))
   end
   leds(now, left)
 end
 
+local function redraw()          -- what was drawn while hidden is stale: draw the view afresh
+  for k = 1, 5 do cards[k].w = nil end
+  for k = 1, #pool do pool[k].w, pool[k].y, pool[k].iconKey = nil, nil, {} end
+  bgShape, lastOff, schedDirty, upKey = nil, nil, true, {}
+  chartKey, vv.tlKey = nil, nil
+  if view == "validator" then drawBars() end
+end
+
+-- LEFT / RIGHT: views. LIVE: SELECT, the LEDs' mode. SCHEDULE: UP / DOWN pick a slot,
+-- SELECT follows its leader, BACK goes live. VALIDATOR: SELECT, choose whom to follow.
 function on_key(key)
-  if view == "schedule" and (key == "up" or key == "down") then
-    local p = live and phase(sys.millis()) or 0
-    schedSelect(key == "down" and 1 or -1, est + math.floor(p))
+  keyAt = sys.millis()
+  if pick.open then                              -- the validator list has the keys
+    if key == "up" or key == "down" then
+      pick.i = math.max(1, math.min(#pick.items, pick.i + (key == "down" and 1 or -1)))
+      pick.moved = true
+      pick.draw()
+    elseif key == "select" then
+      local it = pick.items[pick.i]
+      if it and not it.wait then
+        pick.show(false)
+        follow(it.id and { t = "follow", id = it.id } or { t = "follow" }, it.name)
+      end
+    elseif key == "back" or key == "left" or key == "right" then
+      pick.show(false)
+    end
     return true
   end
-  if view == "schedule" and key == "back" and sel then
-    sel, scrollTo = nil, 0
-    return true
+  if view == "schedule" then
+    if key == "up" or key == "down" then
+      local p = live and phase(sys.millis()) or 0
+      schedSelect(key == "down" and 1 or -1, est + math.floor(p))
+      return true
+    elseif key == "back" and sel then
+      schedLive()
+      return true
+    elseif key == "select" then
+      if sel then
+        local w = wins[sel - sel % 4]
+        follow({ t = "follow", s = sel }, w and w.n ~= "" and w.n or "this leader")
+      else
+        toast("UP / DOWN pick a slot")
+      end
+      return true
+    end
   end
   if key == "left" or key == "right" then
     local i = 1
     for n, v in ipairs(ORDER) do if v == view then i = n end end
     i = (i - 1 + (key == "right" and 1 or -1)) % #ORDER + 1
+    if sel then schedLive() end                  -- leaving a paused schedule lets it go
     showView(ORDER[i])
-    showPanel(view == "schedule" and sel ~= nil)
-    -- what was drawn while hidden is stale: draw this view afresh
-    for k = 1, 5 do cards[k].w = nil end
-    for k = 1, #pool do pool[k].w, pool[k].y, pool[k].iconKey = nil, nil, {} end
-    bgShape, lastOff, schedDirty, upKey = nil, nil, true, {}
-    chartKey, tlKey = nil, nil
-    if view == "validator" then drawBars() end
+    showPanel(false)
+    redraw()
     return true
   elseif key == "select" then
+    if view == "validator" then openPicker() return true end
     mode = mode % #MODES + 1
     if MODES[mode] == "off" then led.off() ledNow = {} end
-    ui.toast("LEDs: " .. MODES[mode])
+    toast("LEDs: " .. MODES[mode])
     return true
   end
   return false

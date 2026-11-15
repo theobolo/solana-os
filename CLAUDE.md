@@ -10,10 +10,13 @@ dashboard on the badge. The owner writes in French; answer in French.
   `firedancer-gui`). Three views (LIVE, SCHEDULE, VALIDATOR), LEDs. Data comes as
   messages `f` (slot, TPS, 10 Hz), `w` (one leader window in full), `info`, `slot`:
   JSON over Wi-Fi (`ws`), or packed binary over Bluetooth (`unpackMsg`).
-- `core.ts`: the relay's logic. Hosts: `worker/` (Cloudflare Worker + Durable
-  Object, deployed at `firedancer-gui-relay.theo-b59.workers.dev`) and `server.ts`
-  (Bun). It follows `wss://gui.firedancer.io/websocket` (Jump's dashboard) and that
-  dashboard's own validator, unless `IDENTITY` / `VOTE` pin another.
+- `core.ts`: the relay's logic (`Relay`) and the badges' sockets (`Hub`). Hosts:
+  `worker/` (Cloudflare Worker + Durable Object, deployed at
+  `firedancer-gui-relay.theo-b59.workers.dev`) and `server.ts` (Bun). It follows
+  `wss://gui.firedancer.io/websocket` (Jump's dashboard). Each badge follows one
+  validator: by default the dashboard's own (or `IDENTITY` / `VOTE`), else the one it
+  asks for (`/live?v=<identity>`, or the messages `follow` and `list`, top of core.ts).
+  Choosing works over Wi-Fi only: a phone relays the default.
 - `worker/src/install.html`: a page for Chrome (WebUSB + Web Bluetooth): installs the
   app over the badge's serial console (`lua put`), relays over Bluetooth.
 - `android/`: the Android app (no Gradle: `build.sh`). Installs over USB (CH340) and
@@ -48,6 +51,14 @@ refused every server-mediated call, `ws` included (`"denied"`).
   that wraps them in `sys.millis()` and prints every 2 s, sent with `tools/badgeput.py`
   and run with `tools/badgerun.py`. Put the real main.lua back after.
 - Report what was tested where: the simulator is not the badge.
+- **Labels wrap at their width**, and the badge's fonts are not monospaced (12 px "mono"
+  is 5 to 9 px a character, `W` is 14 px in the 14 px font). Cut names with `fit()` in
+  main.lua (the fonts' widths), never `sub(1, n)`. The simulator draws with the badge's
+  own fonts (`tools/badgefont.py`, from `main/assets/sol_*.c`) and prints `WRAPS on the
+  badge` for any label that would wrap.
+- **128 UI objects** (the app uses 125) and **200 locals** in main.lua's main chunk:
+  group new state in tables. A label's text can fail "low on memory" (SRAM): toasts and
+  the picker go through `pcall`.
 
 ## Testing without a badge (`apps/firedancer-gui/tools/`)
 
@@ -66,6 +77,14 @@ mkdir out && KEYS="6000:right,20010:down,30000:back,33000:right" SHOT_MS=1500 \
   python3 tools/bench.py main.lua ws rec.ws out && python3 tools/bench.py main.lua ble rec.hex out
 python3 tools/report.py out       # ms of screen per tick, by phase of that key scenario
 ```
+
+Times in `KEYS` and `SHOT_MS` must be multiples of the 30 ms tick (9000 and 1500, not
+10000 and 1000), or they never happen. `STORE='{"follow": "..."}'`
+presets the app's storage; `EXTRA=file` adds "ms {json}" messages to a ws replay.
+Live, against a real relay (`DEV_NO_TICKET=1 PORT=8090 bun server.ts`, or `npx wrangler
+dev --port 8788 --var DEV_NO_TICKET:1` in `worker/`): `SECONDS=40 KEYS=... python3
+tools/bench.py main.lua live ws://localhost:8090/live out` (needs `websockets`); what
+the app sends goes to the relay, and the run prints it.
 
 `bench.py` writes `out/<mode>_NN.png` screenshots and pickles; the two modes must
 give identical screens (but the very first). `tools/fakebadge.mjs` runs the page's
@@ -103,6 +122,16 @@ carousel jump, cells at 10 Hz, countdown tenths < 10 s): LIVE 440 -> 171 kpx/s, 
 ticks/s; no watchdog on the official firmware. Internal SRAM is tight while it runs
 (~37 KB free): once, with `top` started first, `label:text` failed "low on memory".
 The badge still has the app's first version `galaxy-live` on its card (`lua rm`).
+
+2026-11-15, UI pass (simulator with the badge's fonts, and live against the relay, Bun
+and `wrangler dev`): SCHEDULE pauses while a slot is selected (it kept moving a card
+each leader), SELECT there follows that slot's leader; VALIDATOR redone (name, rank,
+version, country, stake, commission, skip rate, blocks, timeline, countdown, last 16
+blocks) with SELECT for a list (default, last chosen, top 20 by stake); the choice is
+kept on the card (`storage`: follow, recent, defname) and sent as `?v=` on connect; a
+strip on top says which view; connection states in their own label (they wrapped in
+the TPS one). Simulator screen cost: LIVE 4.2 kpx a tick, SCHEDULE navigating 2.5
+(was 6.1), VALIDATOR 3.9 (was 5.2). Not yet on the badge.
 
 The Wi-Fi path (`ws` with the badge server's ticket: needs the store or a test run
 from `/apps/submit`, "Run on badge", desktop Chrome), and everything since the

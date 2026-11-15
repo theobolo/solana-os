@@ -1,7 +1,8 @@
 // Firedancer GUI relay on Cloudflare Workers: one Durable Object holds the websocket
 // to the Firedancer GUI and the badges' sockets, and sends them what core.ts builds.
 //
-//   GET /live      the badge's WebSocket (badge_ticket checked, see LUA_API.md "ws")
+//   GET /live      the badge's WebSocket (badge_ticket checked, see LUA_API.md "ws");
+//                  ?v=<identity> follows that validator (core.ts: "follow", "list")
 //   GET /status    whether it is following the feed, and the latest info and frame
 //   GET /app/firedancer-gui.apk?k=<PHONE_KEY>  the Android relay app (android/), from KV
 //   GET /install   a page for a phone: installs the app on the badge over USB, then feeds
@@ -17,7 +18,7 @@
 //
 // Settings are the [vars] of wrangler.toml.
 
-import { Relay, fromBadgeSocket } from '../../core';
+import { Relay, Hub, Follow, fromBadgeSocket } from '../../core';
 import page from './install.html';
 import mainLua from '../../main.lua';
 import manifest from '../../app.json';
@@ -26,8 +27,8 @@ interface Env {
   RELAY: DurableObjectNamespace;
   FD_WS: string; IDENTITY: string; VOTE: string; RPC_URL: string; APP: string;
   BADGE_SERVER: string; FRAME_MS: string; DEV_NO_TICKET?: string;
-  PHONE_KEY?: string;
-  FILES: KVNamespace;                     // firedancer-gui.apk (it holds PHONE_KEY: served with the key only)                    // a secret: lets the /install page's phone follow the relay
+  PHONE_KEY?: string;                     // a secret: lets the /install page's phone follow the relay
+  FILES: KVNamespace;                     // firedancer-gui.apk (it holds PHONE_KEY: served with the key only)
 }
 
 export default {
@@ -67,7 +68,7 @@ export default {
 // The relay object's name. A running object keeps the code it started with while sockets
 // hold it open, even across deploys: change this with any change to the relay so the next
 // connection gets an object running the new code (the old one stops once its sockets go).
-const RELAY_NAME = 'relay-6';
+const RELAY_NAME = 'relay-7';
 
 function sameText(a: string, b: string) {   // compared in full, whatever differs
   let d = 0;
@@ -76,18 +77,17 @@ function sameText(a: string, b: string) {   // compared in full, whatever differ
 }
 
 export class RelayDO {
-  private clients = new Set<WebSocket>();
-  private waiting = new Set<WebSocket>();   // came before the feed: the history is still to send
   private relay: Relay;
+  private hub: Hub;                          // the badges' sockets, each with the validator it follows
   private up: WebSocket | null = null;
   private timers: ReturnType<typeof setInterval>[] = [];
   private idle: ReturnType<typeof setTimeout> | null = null;
   private delay = 1000;
-  private lastFrame = '';
   private saved: string | undefined;         // the last snapshot, in storage too
 
   constructor(private state: DurableObjectState, private env: Env) {
     this.relay = this.fresh();
+    this.hub = new Hub(this.relay, (f) => this.readVote(f));
     state.blockConcurrencyWhile(async () => {
       this.saved = await state.storage.get<string>('snapshot');
       if (this.saved) this.relay.restore(this.saved);
@@ -95,11 +95,17 @@ export class RelayDO {
   }
 
   private fresh() {
-    const r = new Relay(this.env.IDENTITY, (m) => this.broadcast(m), (fn, ms) => setTimeout(fn, ms), console.log);
+    const r = new Relay(this.env.IDENTITY, (m, to) => this.hub.deliver(m, to), (fn, ms) => setTimeout(fn, ms), console.log);
     r.upstream = 'idle';
-    r.vote = this.relay?.vote ?? null;       // keep what we know of the vote account
+    r.main.vote = this.relay?.main.vote ?? null;   // keep what we know of the vote account
     if (this.saved) r.restore(this.saved);
+    if (this.hub) this.hub.relay = r;
     return r;
+  }
+
+  private readVote(f: Follow) {
+    const r = this.relay;
+    return r.readVote(f, this.env.RPC_URL, f === r.main ? this.env.VOTE || r.voteKey : '');
   }
 
   private save() {
@@ -108,34 +114,17 @@ export class RelayDO {
     this.state.storage.put('snapshot', this.saved).catch((e) => console.log('storage: ' + String(e)));
   }
 
-  private broadcast(m: object) {
-    const s = JSON.stringify(m);
-    for (const c of this.clients) { try { c.send(s); } catch { this.clients.delete(c); } }
-  }
-
   private start() {
     if (this.idle) { clearTimeout(this.idle); this.idle = null; }
     if (this.timers.length) return;
     this.connect();
-    setTimeout(() => this.relay.readVote(this.env.RPC_URL, this.env.VOTE), 8000);   // once we know which validator
+    setTimeout(() => this.relay.readVotes(this.env.RPC_URL, this.env.VOTE), 8000);   // once we know which validators
     this.timers = [
-      setInterval(() => {
-        if (!this.clients.size || !this.relay.est) return;
-        if (this.waiting.size && this.relay.epochs.size) {
-          const h = this.relay.history(16).map((w) => JSON.stringify(w));
-          for (const c of this.waiting) { try { for (const s of h) c.send(s); } catch { this.clients.delete(c); } }
-          this.waiting.clear();
-        }
-        for (const w of this.relay.changedWindows()) this.broadcast(w);
-        const s = JSON.stringify(this.relay.frame());
-        if (s === this.lastFrame) return;
-        this.lastFrame = s;
-        for (const c of this.clients) { try { c.send(s); } catch { this.clients.delete(c); } }
-      }, Number(this.env.FRAME_MS || 100)),
-      setInterval(() => this.broadcast(this.relay.info()), 2000),
+      setInterval(() => this.hub.tick(), Number(this.env.FRAME_MS || 100)),
+      setInterval(() => this.hub.infos(), 2000),
       setInterval(() => this.relay.prune(), 10_000),
       setInterval(() => this.save(), 60_000),
-      setInterval(() => this.relay.readVote(this.env.RPC_URL, this.env.VOTE), 5 * 60_000),
+      setInterval(() => this.relay.readVotes(this.env.RPC_URL, this.env.VOTE), 5 * 60_000),
     ];
   }
 
@@ -150,7 +139,7 @@ export class RelayDO {
   }
 
   private connect() {
-    if (!this.timers.length && this.up === null && !this.clients.size) return;
+    if (!this.timers.length && this.up === null && !this.hub.size) return;
     this.relay.upstream = 'connecting';
     const ws = new WebSocket(this.env.FD_WS);
     this.up = ws;
@@ -172,26 +161,21 @@ export class RelayDO {
   async fetch(req: Request): Promise<Response> {
     const u = new URL(req.url);
     if (u.pathname === '/status') {
-      if (!this.relay.vote) await this.relay.readVote(this.env.RPC_URL, this.env.VOTE);
-      return Response.json({ badges: this.clients.size, info: this.relay.info(), frame: this.relay.est ? this.relay.frame() : null });
+      if (!this.relay.main.vote) await this.readVote(this.relay.main);
+      return Response.json({ badges: this.hub.size, info: this.relay.info(), frame: this.relay.est ? this.relay.frame() : null });
     }
-    // /live: the Worker above has checked the badge's ticket.
+    // /live (the Worker above has checked the badge's ticket) or /phone.
     const [client, server] = Object.values(new WebSocketPair());
     server.accept();
-    this.clients.add(server);
-    this.start();
+    this.hub.add(server, u.searchParams.get('v') ?? '');
+    this.start();                            // after: it connects upstream only for a badge
+    server.addEventListener('message', (ev) => { if (typeof ev.data === 'string') this.hub.message(server, ev.data); });
     const gone = () => {
-      this.clients.delete(server);
-      this.waiting.delete(server);
-      if (!this.clients.size && !this.idle) this.idle = setTimeout(() => { this.idle = null; if (!this.clients.size) this.stop(); }, 30_000);
+      this.hub.remove(server);
+      if (!this.hub.size && !this.idle) this.idle = setTimeout(() => { this.idle = null; if (!this.hub.size) this.stop(); }, 30_000);
     };
     server.addEventListener('close', gone);
     server.addEventListener('error', gone);
-    server.send(JSON.stringify(this.relay.info()));
-    if (this.relay.est && this.relay.epochs.size) {
-      for (const w of this.relay.history(16)) server.send(JSON.stringify(w));
-      server.send(JSON.stringify(this.relay.frame()));
-    } else this.waiting.add(server);
     return new Response(null, { status: 101, webSocket: client });
   }
 }

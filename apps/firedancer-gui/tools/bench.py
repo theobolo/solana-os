@@ -9,6 +9,8 @@ import lupa
 from PIL import Image, ImageDraw, ImageFont
 
 SRC, MODE, REC, OUT = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+# MODE "live": REC is a relay's ws:// URL (DEV_NO_TICKET=1 bun server.ts), the app's socket
+# goes there (its query kept) and what it sends goes back; SECONDS of real time.
 RIGHT_AT = None
 os.makedirs(OUT, exist_ok=True)
 
@@ -33,8 +35,11 @@ def _font(paths, size):
 _MONO = ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf"]
 _SANS = ["/usr/share/fonts/opentype/inter/Inter-Medium.otf", "/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/SFNS.ttf"]
 _BOLD = ["/usr/share/fonts/opentype/inter/Inter-SemiBold.otf", "/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/SFNS.ttf"]
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from badgefont import Font
+BFONT = {12: Font("sol_mono_12"), 14: Font("sol_font_14"), 20: Font("sol_font_20"), 32: Font("sol_font_32")}   # the badge's own
 FONTS = {12: _font(_MONO, 9), 14: _font(_SANS, 13), 20: _font(_BOLD, 19), 32: _font(_BOLD, 30)}
-LINE = {12: 14, 14: 14, 20: 21, 32: 33}
+LINE = {k: f.line_height for k, f in BFONT.items()}
 STATUS_H = 22
 
 L = lupa.LuaRuntime(unpack_returned_tuples=True)
@@ -51,6 +56,10 @@ def opt(o, k, d=None):
     return d if v is None else v
 
 DIRTY = []
+WRAPS = {}         # labels whose text the badge would wrap onto more lines than it has: (x, y) -> text
+def check_wrap(o):
+    if o.kind == "label" and o.w and len(BFONT[o.size].lines(o.text, o.w)) > o.text.count("\n") + 1:
+        WRAPS.setdefault((o.x, o.y), (clock[0], o.text))
 WHO = []
 WHOT = []          # areas LVGL would redraw this tick: (x1, y1, x2, y2), screen coordinates
 class Obj:
@@ -61,9 +70,9 @@ class Obj:
         self.inv()
     def box(self):
         if self.kind == "label":
-            f = FONTS[self.size]
-            lines = self.text.split("\n")
-            w = self.w if self.w else max([int(_measure.textlength(t, font=f)) for t in lines] + [1])
+            f = BFONT[self.size]
+            lines = f.lines(self.text, self.w)
+            w = self.w if self.w else max([f.width(t) for t in lines] + [1])
             return (self.x, self.y + STATUS_H, self.x + w, self.y + STATUS_H + LINE[self.size] * len(lines))
         return (self.x, self.y + STATUS_H, self.x + getattr(self, "w", 1), self.y + STATUS_H + getattr(self, "h", 1))
     def inv(self):
@@ -86,6 +95,7 @@ def methods(o):
         s = s.decode() if isinstance(s, bytes) else str(s)
         if s == o.text: return
         o.inv(); o.text = s; o.inv()
+        check_wrap(o)
     def color(self, c):
         o.color = c; o.inv()
     def setv(self, v):
@@ -125,9 +135,10 @@ def label(x, y, text, o=None):
     ob = Obj("label", x, y, text=(text.decode() if isinstance(text, bytes) else str(text)),
              size=int(opt(o, "size", 14)), color=opt(o, "color", "text"), w=opt(o, "w"), align=opt(o, "align", "left"))
     if isinstance(ob.align, bytes): ob.align = ob.align.decode()
+    check_wrap(ob)
     return methods(ob)
 def rect(x, y, w, h, o=None):
-    return methods(Obj("rect", x, y, w=int(w), h=int(h), color=opt(o, "color", "panel"), radius=int(opt(o, "radius", 0))))
+    return methods(Obj("rect", x, y, w=int(w), h=int(h), color=opt(o, "color", "panel"), radius=int(opt(o, "radius", 0)), border=opt(o, "border")))
 def gradient(x, y, w, h): return methods(Obj("grad", x, y, w=int(w), h=int(h)))
 def bar(x, y, w, h, v): return methods(Obj("bar", x, y, w=int(w), h=int(h), value=v))
 def canvas(x, y, w, h, o=None):
@@ -194,10 +205,37 @@ def to_lua(v):
 g.json["decode"] = lambda s: to_lua(json.loads(s))
 
 cb = {}
+SENT = []                    # what the app sent on its socket: (ms, text)
+LIVEQ, LIVEC = queue.Queue(), []
 def ws_open(url, f):
     cb["ws"] = f
-    return L.table()
+    cb["url"] = url
+    if MODE == "live":
+        from websockets.sync.client import connect
+        u = url.decode() if isinstance(url, bytes) else str(url)
+        c = connect(REC + (u[u.index("?"):] if "?" in u else ""), max_size=None)
+        LIVEC[:] = [c]
+        def pump():
+            try:
+                for m in c: LIVEQ.put(m)
+            except Exception: pass
+        threading.Thread(target=pump, daemon=True).start()
+    t = L.table()
+    def send(self, m):
+        text = m.decode() if isinstance(m, bytes) else m if isinstance(m, str) else json.dumps({k: v for k, v in m.items()})
+        SENT.append((millis(), text))
+        if LIVEC: LIVEC[0].send(text)
+        return True
+    t["send"] = send
+    t["state"] = lambda self: "open"
+    return t
 g.ws = L.table(); g.ws["open"] = ws_open
+STORE = json.loads(os.environ.get("STORE", "{}"))   # the app's storage at launch, e.g. '{"follow": "..."}' 
+g.storage = L.table()
+g.storage["get"] = lambda k: to_lua(STORE.get(k.decode() if isinstance(k, bytes) else k))
+def store_set(k, v): STORE[k.decode() if isinstance(k, bytes) else k] = v
+g.storage["set"] = store_set
+g.storage["remove"] = lambda k: STORE.pop(k.decode() if isinstance(k, bytes) else k, None)
 g.ble = L.table()
 g.ble["on"] = lambda: True
 def serve(defn, f): cb["ble"] = f; return True
@@ -238,7 +276,8 @@ def render():
         if not o.vis: continue
         x, y = o.x, o.y + STATUS_H
         if o.kind == "rect":
-            d.rounded_rectangle([x, y, x + o.w - 1, y + o.h - 1], radius=o.radius, fill=rgb(o.color))
+            d.rounded_rectangle([x, y, x + o.w - 1, y + o.h - 1], radius=o.radius, fill=rgb(o.color),
+                                outline=rgb(o.border) if o.border is not None else None)
         elif o.kind == "grad":
             for i in range(o.w):
                 t = i / max(1, o.w - 1)
@@ -247,16 +286,13 @@ def render():
             d.rounded_rectangle([x, y, x + o.w - 1, y + o.h - 1], radius=o.h // 2, fill=rgb("border"))
         elif o.kind == "canvas":
             im.paste(o.img, (x, y), o.img)
-        elif o.kind == "label":
-            f = FONTS[o.size]
-            for n, text in enumerate(o.text.split("\n")):
-                if o.w:
-                    while text and d.textlength(text, font=f) > o.w: text = text[:-1]
-                tw = d.textlength(text, font=f)
-                tx = x
-                if o.w and o.align == "right": tx = x + o.w - tw
-                if o.w and o.align == "center": tx = x + (o.w - tw) / 2
-                d.text((tx, y + n * LINE[o.size] + (1 if o.size == 12 else 0)), text, font=f, fill=rgb(o.color))
+        elif o.kind == "label":   # as LVGL: wrapped at w, not clipped
+            BFONT[o.size].draw(im, x, y, o.text, rgb(o.color), o.w, o.align, (0, STATUS_H, 320, 240))
+    for at, text in toasts:      # roughly the badge's toast: a light pill near the bottom, ~2 s
+        if at <= clock[0] < at + 2000:
+            f = BFONT[14]; tw = min(f.width(text), 280)
+            d.rounded_rectangle([160 - tw // 2 - 10, 206, 160 + tw // 2 + 10, 230], radius=12, fill=(230, 230, 236))
+            f.draw(im, 160 - tw // 2, 211, text, (0, 0, 0), 280 if f.width(text) > 280 else None)
     # the LEDs, drawn around the screen like on the board
     big = Image.new("RGB", (360, 300), (12, 12, 14))
     big.paste(im, (10, 50))
@@ -273,13 +309,26 @@ def render():
     return big
 
 rec = []
-for line in open(REC):
+for line in ([] if MODE == "live" else open(REC)):
     at, payload = line.split(" ", 1)
     rec.append((int(at), payload.strip()))
+if os.environ.get("EXTRA") and MODE == "ws":   # more messages ("ms {json}" lines), e.g. a relay's answers
+    for line in open(os.environ["EXTRA"]):
+        if line.strip():
+            at, payload = line.split(" ", 1)
+            rec.append((int(at), json.dumps({"m": json.loads(payload)})))
+    rec.sort(key=lambda r: r[0])
 shots = {}
 i = 0
 if MODE == "ble": run_cb("ws", cb["ws"], "close", "denied")
-while clock[0] < rec[-1][0] + 500:
+else: run_cb("ws", cb["ws"], "open")
+END = int(os.environ.get("SECONDS", "45")) * 1000 if MODE == "live" else rec[-1][0] + 500
+T0 = time.time()
+while clock[0] < END:
+    if MODE == "live":         # real time: what came by now
+        while time.time() - T0 < clock[0] / 1000: time.sleep(0.005)
+        while not LIVEQ.empty():
+            run_cb("ws", cb["ws"], "message", LIVEQ.get())
     while i < len(rec) and rec[i][0] <= clock[0]:
         if MODE == "ble": run_cb("ble", cb["ble"], "write", "rx", bytes.fromhex(rec[i][1]))
         else: run_cb("ws", cb["ws"], "message", json.dumps(json.loads(rec[i][1])["m"]))
@@ -331,3 +380,7 @@ print("messages fed:", i, "of", len(rec))
 pickle.dump({t: im.tobytes() for t, im in shots.items()}, open(os.path.join(OUT, MODE + ".pkl"), "wb"))
 [im.resize((720, 600), Image.NEAREST).save(os.path.join(OUT, f"{MODE}_{t//1000:02d}.png")) for t, im in shots.items()]
 print("ui objects:", len(objs))
+for at, m in SENT: print("sent at", at, m)
+for at, m in toasts: print("toast at", at, m)
+for (x, y), (at, text) in WRAPS.items(): print(f"WRAPS on the badge: label at {x},{y} ({at} ms): {text!r}")
+if STORE: print("storage:", json.dumps({k: (dict(v) if hasattr(v, "items") else v) for k, v in STORE.items()}, default=lambda x: dict(x)))
