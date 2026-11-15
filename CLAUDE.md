@@ -6,6 +6,11 @@ dashboard on the badge. The owner writes in French; answer in French.
 
 ## What exists (all on branch `claude/solana-breakpoint-badge-mod-llhnwp`)
 
+Published in the badge App Store (listed, Tools): 1.0.0 on 2026-11-15, then 1.0.1 (the
+Wi-Fi keepalive), approved by an organiser after the automatic check flagged it. A new
+version goes through `/apps/submit?id=firedancer-gui` ("Edit your app"): load
+`dist/firedancer-gui.zip`, bump `version` in app.json first.
+
 - `apps/firedancer-gui/main.lua`, `app.json`: the badge app "Firedancer GUI" (id
   `firedancer-gui`). Three views (LIVE, SCHEDULE, VALIDATOR), LEDs. Data comes as
   messages `f` (slot, TPS, 10 Hz), `w` (one leader window in full), `info`, `slot`,
