@@ -101,16 +101,16 @@ local function fit(s, size, px)  -- the longest start of s (ASCII) that is at mo
   return s
 end
 
--- Internal RAM is tight while the app runs (~37 KB free, measured): a call that would
--- leave the badge under 32 KB raises "low on memory". A toast, or a list's text, can
--- wait; the app shouldn't stop for it.
+-- Internal RAM is tight while the app runs: a call that would leave the badge under
+-- 32 KB raises "low on memory". A toast, or a label's longer text, can wait; the app
+-- shouldn't stop for it (a label keeps its old text).
 local function toast(s) pcall(ui.toast, s) end
 
 -- Objects that touch the screen only when something changes.
 local function L(x, y, text, o)
   local l = ui.label(x, y, text, o)
   return { o = l, t = text,
-    text = function(self, s) if self.t ~= s then self.o:text(s) self.t = s end end,
+    text = function(self, s) if self.t ~= s and pcall(self.o.text, self.o, s) then self.t = s end end,
     color = function(self, c) if self.c ~= c then self.o:color(c) self.c = c end end,
     pos = function(self, px, py) if self.x ~= px or self.y ~= py then self.o:pos(px, py) self.x, self.y = px, py end end,
     show = function(self, b) if self.vis ~= b then self.o:show(b) self.vis = b end end }
@@ -1154,7 +1154,8 @@ end
 --   Wi-Fi: the relay's websocket. The badge server allows it only for an app that is
 --     in the store or in a test run ("denied" otherwise).
 --   Bluetooth: a phone (the Android app, or the relay's /install page) follows the
---     relay and writes the same messages, packed, to this badge.
+--     relay and writes the same messages, packed, to this badge. Turned on only once
+--     Wi-Fi is refused, missing, or fails twice.
 
 local function dispatch(m, now)
   lastMsg = now
@@ -1166,29 +1167,6 @@ local function dispatch(m, now)
   elseif t == "slot" and type(m.i) == "number" and m.i >= 0 and m.i <= 3 then onSlot(m)
   elseif t == "list" then onList(m) end
 end
-
--- Wi-Fi. Asking for a socket keeps the radio busy for a few seconds, which Bluetooth
--- shares: never ask while the phone is feeding us, and rarely once refused.
-local retry = 1000
-local connect
-connect = function()
-  if sys.millis() - lastBle < 10000 then timer.after(60000, connect) return end
-  sock = ws.open(RELAY .. (fol.id and ("?v=" .. fol.id) or ""), function(event, data)
-    if event == "open" then
-      retry, sockOpen = 1000, true
-    elseif event == "message" then
-      local m = json.decode(data)
-      if type(m) == "table" then dispatch(m, sys.millis()) end
-    else
-      sockOpen = false
-      local refused = data == "denied" or data == "not linked" or data == "host not allowed"
-      if not live then status(refused and "Wi-Fi denied" or tostring(data)) end
-      timer.after(refused and 600000 or retry, connect)
-      retry = math.min(retry * 2, 30000)
-    end
-  end)
-end
-connect()
 
 -- Bluetooth: the Nordic UART service; the phone writes packed messages to RX
 local NUS = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
@@ -1230,7 +1208,13 @@ local function unpackMsg(d)
   return nil
 end
 
-if ble and ble.on() then
+-- Bluetooth costs the badge ~30 KB of its internal RAM, which the screen's objects
+-- need too: it is turned on only when Wi-Fi can't serve (connect, below).
+local bleOn = false
+local function startBle()
+  if bleOn or not ble then return end
+  bleOn = true
+  if not ble.on() then return end
   local function advertise() ble.advertise({ name = "FD Badge", service = NUS, connectable = true }) end
   local served = ble.serve({ service = NUS, chars = { { uuid = RX, write = true } } }, function(event, a, b)
     if event == "open" then
@@ -1248,6 +1232,32 @@ if ble and ble.on() then
   end)
   if served then advertise() end
 end
+
+-- Wi-Fi. Asking for a socket keeps the radio busy for a few seconds, which Bluetooth
+-- shares: never ask while the phone is feeding us, and rarely once refused.
+local retry, fails = 1000, 0
+local connect
+connect = function()
+  if sys.millis() - lastBle < 10000 then timer.after(60000, connect) return end
+  sock = ws.open(RELAY .. (fol.id and ("?v=" .. fol.id) or ""), function(event, data)
+    if event == "open" then
+      retry, sockOpen, fails = 1000, true, 0
+    elseif event == "message" then
+      local m = json.decode(data)
+      if type(m) == "table" then dispatch(m, sys.millis()) end
+    else
+      sockOpen = false
+      local refused = data == "denied" or data == "not linked" or data == "host not allowed"
+      if not live then status(refused and "Wi-Fi denied" or tostring(data)) end
+      fails = fails + 1
+      if refused or data == "offline" or fails >= 2 then startBle() end   -- a phone may feed us instead
+      timer.after(refused and 600000 or retry, connect)
+      retry = math.min(retry * 2, 30000)
+    end
+  end)
+end
+connect()
+
 
 ---------------------------------------------------------------------------------
 -- Every tick (30 ms)

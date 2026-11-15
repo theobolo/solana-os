@@ -57,8 +57,12 @@ refused every server-mediated call, `ws` included (`"denied"`).
   own fonts (`tools/badgefont.py`, from `main/assets/sol_*.c`) and prints `WRAPS on the
   badge` for any label that would wrap.
 - **128 UI objects** (the app uses 127) and **200 locals** in main.lua's main chunk:
-  group new state in tables. A label's text can fail "low on memory" (SRAM): toasts and
-  the picker go through `pcall`.
+  group new state in tables. A label's text can fail "low on memory" (SRAM): the `L`
+  wrapper, toasts and the picker go through `pcall`. Bluetooth takes ~30 KB of that SRAM:
+  the app turns it on only once Wi-Fi is refused, offline or failed twice (with it on
+  from the start, the diagnostic build stopped the app with "label:text: low on memory").
+- **Badge screenshots** (`tools/badge.py ... "shot"`) take ~20 s over serial and stall the
+  app meanwhile: LIVE then shows "no data" in its header. Not a relay gap (measured).
 
 ## Testing without a badge (`apps/firedancer-gui/tools/`)
 
@@ -131,7 +135,15 @@ blocks) with SELECT for a list (default, last chosen, top 20 by stake); the choi
 kept on the card (`storage`: follow, recent, defname) and sent as `?v=` on connect; a
 strip on top says which view; connection states in their own label (they wrapped in
 the TPS one). Simulator screen cost: LIVE 4.2 kpx a tick, SCHEDULE navigating 2.5
-(was 6.1), VALIDATOR 3.9 (was 5.2). Not yet on the badge.
+(was 6.1), VALIDATOR 3.9 (was 5.2).
+
+2026-11-15, redraw pass (same picture): carousel frames only for a new leader, the tx
+bars in one 320x2 strip, the chart 12 rows shorter, the schedule's countdowns in their
+own labels, the list jumps, a paused list isn't redrawn per leader, the timeline every
+2 s, Bluetooth only when needed. On the badge (`top`, diagnostic build, Wi-Fi):
+LIVE 59% CPU / 135 kpx/s (was ~65% / 171), SCHEDULE 65% / 140 (was ~69% / 179),
+SCHEDULE paused 30% / 15, VALIDATOR 31% / 33 (was ~49%). The Bluetooth path since
+"only when needed" is tested in the simulator only.
 
 The Wi-Fi path (`ws` with the badge server's ticket: needs the store or a test run
 from `/apps/submit`, "Run on badge", desktop Chrome), and everything since the
