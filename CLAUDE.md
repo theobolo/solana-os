@@ -47,6 +47,15 @@ server-mediated call, `ws` included (`"denied"`): it shows "Wi-Fi denied".
   the CPU on the badge (watchdog every 5 s) while the simulator said ~3 ms a tick. Keep
   each view under ~200 kpx/s: nothing big slides (jump instead), big canvases redraw
   once a slot, small animated ones at most 10 Hz, countdowns show tenths only < 10 s.
+- **Lua's own drawing cost, on the badge** (2026-11-15): a canvas call (`rect`, `pixel`,
+  `image`, `clear`) ~50 us whatever its size, plus ~0.14 us a pixel; a label's new text
+  ~1 ms; decoding and reading a message 0.5 (`f`) to 5 ms (`info`), ~4% of the CPU in all.
+  The simulator charges only VM instructions and screen pixels, not this: profile on the
+  badge (a copy of main.lua that sums `sys.millis()` by section of `on_tick` over 5 s and
+  prints it). Count calls, not pixels: the chart is a conveyor canvas (2x the screen,
+  moved 5 px a slot, only new or changed bars drawn), carousel cells redraw one by one,
+  schedule backgrounds only when their look changes. LIVE Lua 261 -> 153 ms/s, 25 -> 28
+  ticks/s; SCHEDULE 244 -> 167; VALIDATOR 124 -> 108.
 - **Measure on the badge**, not only in the simulator: flash the diagnostic build
   (`sdkconfig.stats`, below) and run `top 60` (per-task CPU, LCD kpx/s, LVGL's flush
   wait) while `key right` switches views; time Lua functions with a copy of main.lua
@@ -58,8 +67,9 @@ server-mediated call, `ws` included (`"denied"`): it shows "Wi-Fi denied".
   main.lua (the fonts' widths), never `sub(1, n)`. The simulator draws with the badge's
   own fonts (`tools/badgefont.py`, from `main/assets/sol_*.c`) and prints `WRAPS on the
   badge` for any label that would wrap.
-- **128 UI objects** (the app uses 127) and **200 locals** in main.lua's main chunk:
-  group new state in tables. A label's text can fail "low on memory" (SRAM): the `L`
+- **128 UI objects** (the app uses 127) and **200 locals** in main.lua's main chunk
+  (176 used; the badge's compiler counts a top-level `for` loop's hidden locals too and
+  refused a copy at 197 + one loop that the simulator ran): group new state in tables. A label's text can fail "low on memory" (SRAM): the `L`
   wrapper, toasts and the picker go through `pcall`. Bluetooth would take ~30 KB of that
   SRAM (with it on, the diagnostic build stopped the app with "label:text: low on
   memory"): the app no longer uses it.
