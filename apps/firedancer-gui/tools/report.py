@@ -1,6 +1,7 @@
 import pickle, sys, statistics
-# phases of the scenario: (name, start ms, end ms)
-PH = [("LIVE", 1500, 6000), ("SCHEDULE live", 6500, 20000), ("SCHEDULE navigation", 20000, 30000), ("GALAXY", 34000, 41000)]
+# The screen's cost by phase of CLAUDE.md's key scenario (KEYS="6000:right,20010:down,30000:back,33000:right"):
+# (name, start ms, end ms). python3 tools/report.py OUTDIR...
+PH = [("LIVE", 1500, 6000), ("SCHEDULE live", 6500, 20000), ("SCHEDULE navigation", 20000, 30000), ("VALIDATOR", 34000, 41000)]
 for tag in sys.argv[1:]:
     T = pickle.load(open(tag + "/ws_ticks.pkl", "rb"))
     A = pickle.load(open(tag + "/ws_alloc.pkl", "rb"))

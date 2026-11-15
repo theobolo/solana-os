@@ -56,7 +56,7 @@ refused every server-mediated call, `ws` included (`"denied"`).
   main.lua (the fonts' widths), never `sub(1, n)`. The simulator draws with the badge's
   own fonts (`tools/badgefont.py`, from `main/assets/sol_*.c`) and prints `WRAPS on the
   badge` for any label that would wrap.
-- **128 UI objects** (the app uses 124) and **200 locals** in main.lua's main chunk:
+- **128 UI objects** (the app uses 127) and **200 locals** in main.lua's main chunk:
   group new state in tables. A label's text can fail "low on memory" (SRAM): toasts and
   the picker go through `pcall`.
 

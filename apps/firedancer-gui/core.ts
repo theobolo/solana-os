@@ -64,7 +64,7 @@ export class Follow {
 export class Relay {
   epochs = new Map<number, Epoch>();
   names = new Map<string, string>();                 // identity -> validator name
-  slots = new Map<number, { st: number; ok: number; fail: number; fee: number; ms: number; base: number; tip: number; cu: number }>();
+  slots = new Map<number, { st: number; ok: number; fail: number; ms: number; base: number; tip: number; cu: number }>();
   stakes = new Map<string, bigint>();               // identity -> stake (lamports), this epoch
   countries = new Map<string, string>();            // identity -> country code (gossip)
   versions = new Map<string, string>();             // identity -> software version (gossip)
@@ -228,8 +228,7 @@ export class Relay {
     if (p.skipped === true) st = 5;
     const ok = p.success_transaction_cnt ?? 0, fail = p.failed_transaction_cnt ?? 0, tx = ok + fail;
     const big = (v: unknown) => Math.min(Number(BigInt(String(v ?? 0).split('.')[0] || '0')), 2147483647);
-    this.slots.set(p.slot, { st, ok, fail, fee: Number(BigInt(p.transaction_fee ?? 0) + BigInt(p.priority_fee ?? 0) + BigInt(p.tips ?? 0)),
-      ms: Math.round((p.duration_nanos ?? 0) / 1e6), base: big(p.transaction_fee) + big(p.priority_fee), tip: big(p.tips),
+    this.slots.set(p.slot, { st, ok, fail, ms: Math.round((p.duration_nanos ?? 0) / 1e6), base: big(p.transaction_fee) + big(p.priority_fee), tip: big(p.tips),
       cu: p.max_compute_units > 0 ? Math.round((p.compute_units ?? 0) * 100 / p.max_compute_units) : 0 });
     if (p.level === 'skipped' || (p.skipped === true && (p.level === 'rooted' || p.level === 'finalized'))) this.skipped.add(p.slot);
     const now: 'ok' | 'skip' | null = st === 5 ? 'skip' : st >= 2 ? 'ok' : null;

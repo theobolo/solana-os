@@ -1,17 +1,19 @@
-"""Preview a badge Lua app: runs main.lua in Lua 5.5 with the badge's ui / led /
-ws / timer modules imitated, draws the screen with PIL (approximate fonts, the
-badge's theme colours), feeds it a live relay, and saves frames.
+"""Simulate the badge's screen for a Lua app: runs main.lua in Lua 5.5 with the badge's
+ui / led / ws / ble / storage / timer imitated, draws the screen with PIL in the badge's
+own fonts and theme colours, charges each tick what LVGL would redraw, and saves frames.
 
-python3 preview.py main.lua ws://localhost:PORT/live SECONDS OUTDIR [right_at_s]
+python3 bench.py main.lua ws  rec.ws  OUTDIR      a recording of the relay's JSON messages
+python3 bench.py main.lua ble rec.hex OUTDIR      the same, packed as the phone sends them
+python3 bench.py main.lua live ws://localhost:8090/live OUTDIR   a running relay (SECONDS)
+
+Env: KEYS="ms:key,...", SHOT_MS, STORE (the app's storage, JSON), EXTRA (ws mode: more
+"ms {json}" messages), SECONDS (live mode). See CLAUDE.md, "Testing without a badge".
 """
-import asyncio, json, math, os, sys, threading, time, queue
+import json, math, os, sys, threading, time, queue
 import lupa
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 SRC, MODE, REC, OUT = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-# MODE "live": REC is a relay's ws:// URL (DEV_NO_TICKET=1 bun server.ts), the app's socket
-# goes there (its query kept) and what it sends goes back; SECONDS of real time.
-RIGHT_AT = None
 os.makedirs(OUT, exist_ok=True)
 
 THEME = {"text": 0xFFFFFF, "dim": 0x8E8C9E, "bg": 0x000000, "panel": 0x111116, "border": 0x2A2935,
@@ -25,20 +27,9 @@ def rgb(c):
     r, g, b = (c >> 16) & 255, (c >> 8) & 255, c & 255
     return ((r >> 3) << 3, (g >> 2) << 2, (b >> 3) << 3)
 
-from PIL import ImageDraw as _ID
-_measure = _ID.Draw(Image.new("RGB", (1, 1)))
-def _font(paths, size):
-    for p in paths:
-        try: return ImageFont.truetype(p, size)
-        except OSError: pass
-    return ImageFont.load_default()
-_MONO = ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf"]
-_SANS = ["/usr/share/fonts/opentype/inter/Inter-Medium.otf", "/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/SFNS.ttf"]
-_BOLD = ["/usr/share/fonts/opentype/inter/Inter-SemiBold.otf", "/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/SFNS.ttf"]
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from badgefont import Font
 BFONT = {12: Font("sol_mono_12"), 14: Font("sol_font_14"), 20: Font("sol_font_20"), 32: Font("sol_font_32")}   # the badge's own
-FONTS = {12: _font(_MONO, 9), 14: _font(_SANS, 13), 20: _font(_BOLD, 19), 32: _font(_BOLD, 30)}
 LINE = {k: f.line_height for k, f in BFONT.items()}
 STATUS_H = 22
 
@@ -78,7 +69,8 @@ class Obj:
     def inv(self):
         if self.vis:
             DIRTY.append(self.box())
-            WHO.append((self.kind, getattr(self, "w", None), getattr(self, "h", None), self.x, self.y, (getattr(self, "text", "") or "")[:12]))
+            b = self.box()
+            WHO.append((self.kind, b[2] - b[0], b[3] - b[1], self.x, self.y, (getattr(self, "text", "") or "")[:12]))
 
 def methods(o):
     t = L.table()
@@ -268,7 +260,7 @@ def render():
     d = ImageDraw.Draw(im)
     # status bar, roughly as the badge draws it
     d.rectangle([0, 0, 319, STATUS_H - 1], fill=(10, 14, 28))
-    d.text((24, 4), "Solana OS", font=FONTS[14], fill=(255, 255, 255))
+    BFONT[14].draw(im, 24, 4, "Solana OS", (255, 255, 255))
     for x in range(320):
         t = x / 319
         d.line([x, STATUS_H - 2, x, STATUS_H - 1], fill=(int(0x99 + (0x14 - 0x99) * t), int(0x45 + (0xF1 - 0x45) * t), int(0xFF + (0x95 - 0xFF) * t)))

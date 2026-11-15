@@ -43,7 +43,7 @@
 -- colours and LEDs are set only when they change, and countdowns show tenths only in
 -- their last 10 s. Each view stays under ~200,000 pixels a second (~70% of the CPU).
 -- Labels wrap at their width, and the fonts aren't monospaced: names are cut where they
--- fit (fit). The badge holds 128 objects: this app uses 124.
+-- fit (fit). The badge holds 128 objects: this app uses 127.
 --
 -- Numbers: a badge has 32-bit integers and 32-bit floats. Slot numbers (469 million)
 -- stay integers; only differences between slots ever become floats.
@@ -234,8 +234,10 @@ local function V(name, o) local t = views[name] t[#t + 1] = o return o end
 ---------------------------------------------------------------------------------
 -- LIVE view
 
--- Leader carousel: per card, a canvas for its frame and a small one for its four
--- slots, so a slot filling up redraws 52 x 24 pixels, not the card or the strip.
+-- Leader carousel: per card, a canvas for its frame (redrawn when the leader moves)
+-- and a small one for its four slots, so a slot filling up redraws 52 x 24 pixels,
+-- not the card. The cards' transaction bars grow as their slots come: they are one
+-- see-through 320 x 2 strip over the cards, not five frames redrawn.
 local CAR_Y, PITCH, CW, CH = 27, 65, 60, 72
 local cards = {}
 for k = 1, 5 do
@@ -247,12 +249,14 @@ for k = 1, 5 do
   c.tx = V("live", L(x + 4, CAR_Y + 46, "", { size = 12, color = "dim", w = CW - 4 }))
   cards[k] = c
 end
+local txBars = V("live", C(0, CAR_Y + CH - 6, 320, 2))
 
 -- transactions per slot: one bar per slot, 5 px a slot, a step left as each slot is
 -- made. Drawn once a slot: on the badge the screen costs ~1.4 us a pixel, and sliding
 -- this 17,000-pixel strip a pixel at a time took half of the LIVE view's CPU.
+-- Its top 12 rows hold only the labels: the canvas starts below them.
 local CHART_Y, CHART_H, SLOT_W = 104, 54, 5
-local chart = V("live", C(0, CHART_Y, 320, CHART_H, { color = "bg" }))
+local chart = V("live", C(0, CHART_Y + 12, 320, CHART_H - 12, { color = "bg" }))
 local chartMax, chartKey, chartTop = 1000, nil, nil
 V("live", L(6, CHART_Y + 1, "TX / SLOT", { size = 12, color = "dim" }))
 local maxL = V("live", L(240, CHART_Y + 1, "", { size = 12, color = "dim", w = 74, align = "right" }))
@@ -352,12 +356,13 @@ for i = 1, 3 do
   end
   pool[i] = c
 end
-local ups = {}                   -- the next leaders, one line each
+local ups = {}                   -- the next leaders, a line each; the countdown its own small label (10 Hz)
 for i = 1, 2 do
   ups[i] = { name = V("schedule", L(0, 0, "", { size = 12, color = FD_DIM, w = 150 })),
-             when = V("schedule", L(0, 0, "", { size = 12, color = FD_DIM, w = 150, align = "right" })) }
+             slot = V("schedule", L(0, 0, "", { size = 12, color = FD_DIM, w = 96, align = "right" })),
+             when = V("schedule", L(0, 0, "", { size = 12, color = FD_DIM, w = 44, align = "right" })) }
 end
-V("schedule", ui.rect(0, 24, 320, LIST_Y - 24, { color = "bg" }))   -- what scrolls past the top slides under this
+V("schedule", ui.rect(0, 24, 320, LIST_Y - 24, { color = "bg" }))   -- what is above the list's top hides under this
 for _, col in ipairs(COLS) do
   V("schedule", ui.label(col[1], 27, col[4], { size = 12, color = col[5], w = col[2], align = col[3] }))
 end
@@ -445,7 +450,7 @@ V("validator", ui.label(4, TL_Y + 26, "now", { size = 12, color = "dim" }))
 V("validator", ui.label(150, TL_Y + 26, "5m", { size = 12, color = "dim", w = 20, align = "center" }))
 V("validator", ui.label(282, TL_Y + 26, "10m", { size = 12, color = "dim", w = 34, align = "right" }))
 V("validator", ui.label(8, 155, "NEXT WINDOW", { size = 12, color = "dim" }))
-vv.cd = V("validator", L(8, 167, "", { size = 32, color = TEAL, w = 156 }))
+vv.cd = V("validator", L(8, 167, "", { size = 32, color = TEAL, w = 132 }))   -- "59m59s" is 128 px
 vv.slot = V("validator", L(8, 202, "", { size = 12, color = "dim", w = 156 }))
 V("validator", ui.label(168, 155, "LAST 16 BLOCKS", { size = 12, color = "dim", w = 144 }))
 vv.BAR_H = 44
@@ -517,19 +522,24 @@ local function drawCarousel(now, live_s, f)
   local cur = est - est % 4
   local step = now // 100 ~= cellsAt
   if step then cellsAt = now // 100 end
+  local barsDirty = false
   for k = 1, 5 do
     local card, w = cards[k], winAt(cur + (k - 3) * 4)
     local isCur, ours = k == 3, w.o == 1
-    local changed = card.w ~= w or card.ver ~= w.ver or card.cur ~= isCur
-    if changed then                            -- the frame, the name, the tx: only when they change
-      card.w, card.ver, card.cur = w, w.ver, isCur
+    local bw = math.floor((CW - 8) * math.min(w.tx, 2400) / 2400)
+    local bar = ours and -(bw + 1) or bw + 1     -- its bar's width, negative if orange
+    if card.bar ~= bar then card.bar, barsDirty = bar, true end
+    local frame = card.s ~= w.s or card.cur ~= isCur or card.ours ~= ours
+    if frame then                              -- the frame: when another leader comes here
+      card.s, card.cur, card.ours = w.s, isCur, ours
       local c = card.cv.o
       c:rect(0, 0, CW, CH, isCur and TEAL or (ours and OURS or BORDER))
       c:rect(1, 1, CW - 2, CH - 2, ours and OURS_BG or PANEL)
       if ours then for i = 0, 5 do c:rect(1 + i * 10, 1, i == 5 and 8 or 10, 2, grad(i / 5)) end end
-      local bw = math.floor((CW - 8) * math.min(w.tx, 2400) / 2400)
-      c:rect(4, CH - 6, CW - 8, 2, PANEL_HI)
-      if bw > 0 then c:rect(4, CH - 6, bw, 2, ours and OURS or TEAL) end
+    end
+    local changed = frame or card.w ~= w or card.ver ~= w.ver
+    if changed then                            -- the name, the tx: labels, set only when they change
+      card.w, card.ver = w, w.ver
       card.name:text(fit(w.n, 12, CW - 4))
       card.name:color(ours and OURS_TXT or (isCur and "text" or "dim"))
       card.tx:text(w.tx > 0 and (big(w.tx) .. " tx") or (k > 3 and "next" or ""))
@@ -542,15 +552,25 @@ local function drawCarousel(now, live_s, f)
       for j = 0, 3 do cell(c, j * 13, 0, 11, 24, w.d[j + 1][1], w.s + j, live_s, f, now) end
     end
   end
+  if barsDirty then                            -- 640 pixels, not a card
+    local c = txBars.o
+    c:clear()
+    for k = 1, 5 do
+      local x, bar = cards[k].x + 4, cards[k].bar
+      c:rect(x, 0, CW - 8, 2, PANEL_HI)
+      if math.abs(bar) > 1 then c:rect(x, 0, math.abs(bar) - 1, 2, bar < 0 and OURS or TEAL) end
+    end
+  end
 end
 
 local function drawChart(live_s)
   if live_s == chartKey then return end        -- once a slot (new bars wait for it)
   chartKey = live_s
   local c = chart.o
+  local function rect(x, y, w, h, col) c:rect(x, y - 12, w, h, col) end   -- y as if the canvas began at CHART_Y
   c:clear(BG)
   local H = CHART_H
-  for q = 1, 3 do c:rect(0, H - (H * q) // 4, 320, 1, PANEL) end
+  for q = 1, 3 do rect(0, H - (H * q) // 4, 320, 1, PANEL) end
   local scale = (H - 14) / chartMax
   local top = 0
   for k = 0, 320 // SLOT_W + 1 do
@@ -558,22 +578,22 @@ local function drawChart(live_s)
     local x = 320 - SLOT_W - k * SLOT_W
     local b = slotTx[s]
     if b then
-      if b[3] then c:rect(x, 12, SLOT_W, H - 12, 0x1A0C33) end
+      if b[3] then rect(x, 12, SLOT_W, H - 12, 0x1A0C33) end
       if b[4] then
-        c:rect(x, H - 4, SLOT_W - 1, 4, PINK)
+        rect(x, H - 4, SLOT_W - 1, 4, PINK)
       else
         local oh = math.floor(b[1] * scale)
         local fh = math.floor(b[2] * scale)
         if b[3] then
-          for yy = 0, oh + fh - 1, 2 do c:rect(x, H - 2 - yy, SLOT_W - 1, 2, grad(yy / (H - 14))) end
+          for yy = 0, oh + fh - 1, 2 do rect(x, H - 2 - yy, SLOT_W - 1, 2, grad(yy / (H - 14))) end
         else
-          if oh > 0 then c:rect(x, H - oh, SLOT_W - 1, oh, 0x0C5A44) c:rect(x, H - oh, SLOT_W - 1, 1, GREEN) end
-          if fh > 0 then c:rect(x, H - oh - fh, SLOT_W - 1, fh, 0x5A1E4A) c:rect(x, H - oh - fh, SLOT_W - 1, 1, PINK) end
+          if oh > 0 then rect(x, H - oh, SLOT_W - 1, oh, 0x0C5A44) rect(x, H - oh, SLOT_W - 1, 1, GREEN) end
+          if fh > 0 then rect(x, H - oh - fh, SLOT_W - 1, fh, 0x5A1E4A) rect(x, H - oh - fh, SLOT_W - 1, 1, PINK) end
         end
         if b[1] + b[2] > top then top = b[1] + b[2] end
       end
     elseif s == live_s then
-      c:rect(x, H - 3, SLOT_W - 1, 3, AQUA)
+      rect(x, H - 3, SLOT_W - 1, 3, AQUA)
     end
   end
   chartMax = math.max(500, ((top // 250) + 1) * 250)
@@ -599,7 +619,7 @@ local function cardText(w)       -- the six columns of a card, four lines each
   return c
 end
 
-local scroll, scrollTo = 0, 0
+local scrollTo = 0               -- how far down the list is shown
 local sel = nil                  -- the selected slot (UP / DOWN), nil while following live
 local frozen = nil               -- while one is: the window that was current then (the list stays as it was)
 local keyAt = 0                  -- the last key, to let go after a minute
@@ -663,19 +683,16 @@ local function drawSchedule(now, live_s, p)
     end
   end
   if scrollTo > maxS then scrollTo = maxS end
-  -- a fast ease-out: a moving list redraws all of it, so it moves in as few frames as look smooth
-  if scroll ~= scrollTo then
-    scroll = scroll + (scrollTo - scroll) * 0.55
-    if math.abs(scrollTo - scroll) < 2 then scroll = scrollTo end
-  end
-  local off = math.floor(-scroll + 0.5)
+  -- it jumps to where it goes: a moving list redraws all 57,000 pixels of it each frame
+  local off = -math.floor(scrollTo)
   local moved = off ~= lastOff
   lastOff = off
   local visH = LIST_H - (selIt and PANEL_H or 0)   -- what the panel leaves of the list
 
   -- 1. the cards' backgrounds: only when the list moved, its shape changed or the selection did
-  if moved or shape ~= bgShape or sel ~= bgSel or cur ~= bgCur then
-    bgShape, bgSel, bgCur = shape, sel, cur
+  local nowStyled = frozen == nil or frozen == cur   -- paused, the "now" card turns past once
+  if moved or shape ~= bgShape or sel ~= bgSel or nowStyled ~= bgCur then
+    bgShape, bgSel, bgCur = shape, sel, nowStyled
     local c = sch.o
     c:clear(BG)
     for _, it in ipairs(items) do
@@ -718,9 +735,10 @@ local function drawSchedule(now, live_s, p)
           upKey[upN], u.s = tenths, w.s
           u.name:text(w.n ~= "" and fit(w.n, 12, 146) or "...")
           u.name:color(w.o == 1 and OURS_TXT or FD_DIM)
-          u.when:text(tostring(w.s) .. (tenths >= 0 and string.format("   %.1fs", tenths / 10) or tenths == -1 and "   now" or ""))
-          u.name:pos(12, sy + 1) u.when:pos(160, sy + 1)
-          u.name:show(y >= -14) u.when:show(y >= -14)
+          u.slot:text(tostring(w.s))
+          u.when:text(tenths >= 0 and string.format("%.1fs", tenths / 10) or tenths == -1 and "now" or "")
+          u.name:pos(12, sy + 1) u.slot:pos(166, sy + 1) u.when:pos(266, sy + 1)
+          u.name:show(y >= -14) u.slot:show(y >= -14) u.when:show(y >= -14)
         end
       else
         used = used + 1
@@ -763,7 +781,7 @@ local function drawSchedule(now, live_s, p)
       end
     end
   end
-  for i = upN + 1, #ups do ups[i].name:show(false) ups[i].when:show(false) end
+  for i = upN + 1, #ups do ups[i].name:show(false) ups[i].slot:show(false) ups[i].when:show(false) end
   for i = used + 1, #pool do
     local c = pool[i]
     c.name:show(false) c.meta:show(false) c.icons:show(false)
@@ -833,9 +851,9 @@ local function nextWindows()
 end
 
 local function drawTimeline(now, p)
-  local key = est * 4 + (now // 250) % 4       -- 4 redraws a second is plenty here
-  if key == vv.tlKey then return end
-  vv.tlKey = key
+  -- a pixel is 2 s: redrawn every 2 s, or when the windows change (each info)
+  if now // 2000 == vv.tlKey and info == vv.tlInfo then return end
+  vv.tlKey, vv.tlInfo = now // 2000, info
   local c = vv.tl.o
   c:clear(BG)
   c:rect(10, 22, 300, 1, BORDER)
@@ -847,7 +865,7 @@ local function drawTimeline(now, p)
       for yy = 0, 19, 2 do c:rect(x, 1 + yy, 3, 2, GRAD[yy * 63 // 20]) end
     end
   end
-  c:rect(9, 0, 2, 26, (now // 250) % 2 == 0 and TEAL or AQUA)
+  c:rect(9, 0, 2, 26, TEAL)
 end
 
 local function drawBars()       -- the last 16 blocks, oldest on the left: transactions, pink if skipped
@@ -1303,7 +1321,7 @@ function on_tick(ms)
 end
 
 local function redraw()          -- what was drawn while hidden is stale: draw the view afresh
-  for k = 1, 5 do cards[k].w = nil end
+  for k = 1, 5 do cards[k].w, cards[k].s, cards[k].bar = nil, nil, nil end
   for k = 1, #pool do pool[k].w, pool[k].y, pool[k].iconKey = nil, nil, {} end
   bgShape, lastOff, schedDirty, upKey = nil, nil, true, {}
   chartKey, vv.tlKey = nil, nil
