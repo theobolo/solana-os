@@ -7,6 +7,6 @@
   "icon": "charge",
   "accent": "1FC9A9",
   "category": "tools",
-  "permissions": ["http", "led", "ble"],
+  "permissions": ["http", "led"],
   "hosts": ["firedancer-gui-relay.theo-b59.workers.dev"]
 }

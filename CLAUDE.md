@@ -8,31 +8,28 @@ dashboard on the badge. The owner writes in French; answer in French.
 
 - `apps/firedancer-gui/main.lua`, `app.json`: the badge app "Firedancer GUI" (id
   `firedancer-gui`). Three views (LIVE, SCHEDULE, VALIDATOR), LEDs. Data comes as
-  messages `f` (slot, TPS, 10 Hz), `w` (one leader window in full), `info`, `slot`:
-  JSON over Wi-Fi (`ws`), or packed binary over Bluetooth (`unpackMsg`).
+  messages `f` (slot, TPS, 10 Hz), `w` (one leader window in full), `info`, `slot`,
+  `list`: JSON over Wi-Fi (`ws`). Store zip for /apps/submit: `dist/firedancer-gui.zip`.
 - `core.ts`: the relay's logic (`Relay`) and the badges' sockets (`Hub`). Hosts:
   `worker/` (Cloudflare Worker + Durable Object, deployed at
   `firedancer-gui-relay.theo-b59.workers.dev`) and `server.ts` (Bun). It follows
   `wss://gui.firedancer.io/websocket` (Jump's dashboard). Each badge follows one
   validator: by default the dashboard's own (or `IDENTITY` / `VOTE`), else the one it
   asks for (`/live?v=<identity>`, or the messages `follow` and `list`, top of core.ts).
-  Choosing works over Wi-Fi only: a phone relays the default.
-- `worker/src/install.html`: a page for Chrome (WebUSB + Web Bluetooth): installs the
-  app over the badge's serial console (`lua put`), relays over Bluetooth.
-- `android/`: the Android app (no Gradle: `build.sh`). Installs over USB (CH340) and
-  relays over Bluetooth in a foreground service.
 - `tools/`: tests (below).
+- Removed 2026-11-15 (the owner won't use it; in git history before that date): the
+  Bluetooth path for an app outside the store (`worker/src/install.html`, a Chrome page
+  installing over USB and relaying over Bluetooth; `android/`, the same as an Android
+  app; `/phone`, `/install`, the APK route; the binary packers and their tests).
 - `main/core/console.c`: an added console command, `fdbench` (see "Next").
 
 Why a relay: the badge's `ws` closes on any message over 4 KB
 (`OS_SOCKET_MSG_MAX`, `main/core/os_socket.h`), and the dashboard sends megabytes.
-Why Bluetooth: an app that is not in the badge's store (nor in a "test run") is
-refused every server-mediated call, `ws` included (`"denied"`).
+An app that is not in the badge's store (nor in a "test run") is refused every
+server-mediated call, `ws` included (`"denied"`): it shows "Wi-Fi denied".
 
 ## Rules learned the hard way
 
-- **Three packers must agree**: `packMsg` in `worker/src/install.html`, `Pack.java`,
-  and `unpackMsg` in `main.lua`. Change one, change all, and run the parity checks.
 - **A Durable Object keeps its old code** while sockets hold it open, even across
   deploys: bump `RELAY_NAME` in `worker/src/index.ts` with any relay change.
 - **Badge numbers are 32-bit** (integers and floats): slot numbers stay integers,
@@ -58,27 +55,31 @@ refused every server-mediated call, `ws` included (`"denied"`).
   badge` for any label that would wrap.
 - **128 UI objects** (the app uses 127) and **200 locals** in main.lua's main chunk:
   group new state in tables. A label's text can fail "low on memory" (SRAM): the `L`
-  wrapper, toasts and the picker go through `pcall`. Bluetooth takes ~30 KB of that SRAM:
-  the app turns it on only once Wi-Fi is refused, offline or failed twice (with it on
-  from the start, the diagnostic build stopped the app with "label:text: low on memory").
+  wrapper, toasts and the picker go through `pcall`. Bluetooth would take ~30 KB of that
+  SRAM (with it on, the diagnostic build stopped the app with "label:text: low on
+  memory"): the app no longer uses it.
+- **Bursts after a stall**: the link (hotel Wi-Fi, -77 dBm) sometimes stalls 8 to 25 s,
+  then delivers it all at once. Reading every message then kept the CPU busy past the
+  task watchdog (5 s, official firmware). main.lua queues messages (`post`) and reads
+  each tick only the newest frame, info and version of each window (`drain`); a 238-
+  message burst then cost one 5 s window at ~15 ticks/s, no watchdog. The prefix match
+  needs the relay's compact JSON (`JSON.stringify`); anything else is read in order.
 - **Badge screenshots** (`tools/badge.py ... "shot"`) take ~20 s over serial and stall the
   app meanwhile: LIVE then shows "no data" in its header. Not a relay gap (measured).
 
 ## Testing without a badge (`apps/firedancer-gui/tools/`)
 
-Needs Python with `lupa`, `pillow`; Node or Bun; a JDK for the Java checks.
+Needs Python with `lupa`, `pillow` (`uv run --with lupa --with pillow python3 ...`); Bun.
 
 ```sh
 cd apps/firedancer-gui
 # record 45 s from a local relay (or use tools/sample.jsonl)
 DEV_NO_TICKET=1 PORT=8080 bun server.ts &            # then:
 bun tools/record.ts rec.jsonl
-# pack it the page's way, and build the two replay files
-node tools/pack.mjs worker/src/install.html rec.jsonl rec.hex
 python3 -c "import json;[print(json.loads(l)['at'], l.strip()) for l in open('rec.jsonl') if l.strip()]" > rec.ws
-# run main.lua in a simulator of the screen: both transports, screen-cost report
+# run main.lua in a simulator of the screen, then the screen-cost report
 mkdir out && KEYS="6000:right,20010:down,30000:back,33000:right" SHOT_MS=1500 \
-  python3 tools/bench.py main.lua ws rec.ws out && python3 tools/bench.py main.lua ble rec.hex out
+  python3 tools/bench.py main.lua ws rec.ws out
 python3 tools/report.py out       # ms of screen per tick, by phase of that key scenario
 ```
 
@@ -90,26 +91,20 @@ dev --port 8788 --var DEV_NO_TICKET:1` in `worker/`): `SECONDS=40 KEYS=... pytho
 tools/bench.py main.lua live ws://localhost:8090/live out` (needs `websockets`); what
 the app sends goes to the relay, and the run prints it.
 
-`bench.py` writes `out/<mode>_NN.png` screenshots and pickles; the two modes must
-give identical screens (but the very first). `tools/fakebadge.mjs` runs the page's
-installer against a fake serial console; `tools/java/` has the same for the Android
-installer and the Java-vs-page packer comparison (`tools/cmp.mjs`).
+`bench.py` writes `out/<mode>_NN.png` screenshots and pickles.
 
 ## Deploying
 
 ```sh
-cd apps/firedancer-gui/worker && npx wrangler deploy          # the relay and the page
-cd ../android && ANDROID_HOME=... PHONE_KEY=... KEYSTORE=... VERSION=n ./build.sh
-cd ../worker && npx wrangler kv key put --binding FILES firedancer-gui.apk \
-  --path ../android/build/firedancer-gui.apk --remote
+cd apps/firedancer-gui/worker && npx wrangler deploy          # the relay
+cd .. && zip -j dist/firedancer-gui.zip main.lua app.json      # what /apps/submit takes
 ```
 
 - Cloudflare: `npx wrangler login` on this machine (the cloud session used an API
   token that is not here). Account subdomain `theo-b59`, plan Workers Paid.
-- `PHONE_KEY` is a Worker secret (the `k=` of the owner's install link); the owner
-  has it. Never commit it.
-- The Android signing key (`firedancer-gui.jks`, passwords in `build.sh`) was sent
-  to the owner as a file; updates must be signed with it.
+- Left on Cloudflare after the phone path went (ask the owner before deleting): the
+  Worker secret `PHONE_KEY` and the KV namespace `firedancer-gui-files` with the old
+  `firedancer-gui.apk` (no longer bound to the Worker).
 - The old Worker `galaxy-live-relay` (the app's first name) was deleted on
   2026-11-14, with its `galaxy-live.apk`. The KV namespace it shared with this relay
   is now titled `firedancer-gui-files` (same id).
@@ -142,14 +137,12 @@ bars in one 320x2 strip, the chart 12 rows shorter, the schedule's countdowns in
 own labels, the list jumps, a paused list isn't redrawn per leader, the timeline every
 2 s, Bluetooth only when needed. On the badge (`top`, diagnostic build, Wi-Fi):
 LIVE 59% CPU / 135 kpx/s (was ~65% / 171), SCHEDULE 65% / 140 (was ~69% / 179),
-SCHEDULE paused 30% / 15, VALIDATOR 31% / 33 (was ~49%). The Bluetooth path since
-"only when needed" is tested in the simulator only.
+SCHEDULE paused 30% / 15, VALIDATOR 31% / 33 (was ~49%). Then the Bluetooth path was
+removed (the owner's call).
 
-The Wi-Fi path (`ws` with the badge server's ticket: needs the store or a test run
-from `/apps/submit`, "Run on badge", desktop Chrome), and everything since the
-"optimization pass" and the Firedancer rebrand, were only run in the simulator.
-The Bluetooth path, the page installer and the Android app did work on the owner's
-badge in earlier versions.
+The Wi-Fi path needs the badge server's ticket: the store, or a test run from
+`/apps/submit` ("Run on badge", desktop Chrome, 12 h). `tools/badgeput.py` copies a
+new main.lua onto a badge that has the app; it runs with Wi-Fi while a test run lasts.
 
 ## Next: a client on the badge itself (no relay)
 

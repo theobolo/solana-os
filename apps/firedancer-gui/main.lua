@@ -22,17 +22,16 @@
 --   The followed validator: name, rank, version, stake, commission, skip rate, blocks
 --   made this epoch, its next windows on a 10-minute timeline, the countdown to the
 --   next one, its last 16 blocks (transactions each). SELECT: a list to follow another
---   (the default, the last ones chosen, the 20 biggest by stake). Needs Wi-Fi.
+--   (the default, the last ones chosen, the 20 biggest by stake).
 --
 -- LEDs: while the validator is leader the six top LEDs fill slot by slot (orange to
 -- teal, red for a skip), then flash and fade. The side LEDs breathe as its next
 -- window comes and, in "full" mode, tick with every slot of the cluster.
 -- SELECT in LIVE: LED mode (full / validator only / off). CANCEL: exit.
 --
--- Data: the relay (server.ts or worker/), over Wi-Fi (a WebSocket) or through a
--- phone over Bluetooth: "f" ten times a second (the slot and the TPS, 9 bytes over
--- Bluetooth), "w" for a leader window whenever it changes, "info" every 2 s. Over
--- Wi-Fi the badge says whom it follows ("follow", core.ts); a phone relays the default.
+-- Data: the relay (server.ts or worker/), over a WebSocket: "f" ten times a second
+-- (the slot and the TPS), "w" for a leader window whenever it changes, "info" every
+-- 2 s. The badge says whom it follows ("follow", core.ts).
 --
 -- Speed. on_tick runs every 30 ms, and on the badge the screen costs ~1.4 us a pixel
 -- redrawn (measured with this app: 1.0 to 1.7 by view) plus ~1 ms an area, all on the
@@ -135,7 +134,7 @@ local info = nil
 local est, sd = 0, 400           -- the relay's estimated slot, ms per slot
 local pbase, pat = 0, 0          -- our slot clock: slots past `est` at time `pat` (a small float)
 local live = false
-local lastMsg, lastBle = -10000, -10000
+local lastMsg = -10000
 local win = { on = false, tx = 0, fee = 0, skip = false }   -- the validator's window in progress
 local blocks = {}                -- the validator's last 16 slots: {tx, skipped}
 local slotTx = {}                -- slot -> {ok, fail, ours, skipped}, for the chart
@@ -953,7 +952,7 @@ end
 -- s = slot} (that slot's leader) or {t = "follow"} (its default). Its answer is an info
 -- message, then the windows again (to say which are the new one's).
 local function follow(req, name)
-  if not (sock and sockOpen) then toast("Choosing needs Wi-Fi") return false end
+  if not (sock and sockOpen) then toast("Not connected") return false end
   fol.n = fol.n + 1
   req.n = fol.n
   if not sock:send(req) then toast("Busy, try again") return false end
@@ -1008,7 +1007,7 @@ function pick.draw()             -- its text grows: low on memory, close it rath
 end
 
 local function openPicker()
-  if not (sock and sockOpen) then toast("Choosing needs Wi-Fi") return end
+  if not (sock and sockOpen) then toast("Not connected") return end
   sock:send({ t = "list" })
   pickItems()
   pick.i, pick.top, pick.moved = 1, 1, false
@@ -1150,15 +1149,10 @@ local function leds(now, left)
 end
 
 ---------------------------------------------------------------------------------
--- Connections. Two ways in, whichever delivers:
---   Wi-Fi: the relay's websocket. The badge server allows it only for an app that is
---     in the store or in a test run ("denied" otherwise).
---   Bluetooth: a phone (the Android app, or the relay's /install page) follows the
---     relay and writes the same messages, packed, to this badge. Turned on only once
---     Wi-Fi is refused, missing, or fails twice.
+-- The relay's websocket. The badge server allows it only for an app that is in the
+-- store or in a test run ("denied" otherwise).
 
 local function dispatch(m, now)
-  lastMsg = now
   local t = m.t
   if t == "f" then onFrame(m, now)
   elseif t == "w" then
@@ -1168,89 +1162,45 @@ local function dispatch(m, now)
   elseif t == "list" then onList(m) end
 end
 
--- Bluetooth: the Nordic UART service; the phone writes packed messages to RX
-local NUS = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
-local RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
-
-local function unpackMsg(d)
-  local k = d:sub(1, 1)
-  if k == "F" and #d == 9 then                 -- the slot and the TPS
-    local _, e, ok, fail = string.unpack("<c1I4I2I2", d)
-    return { t = "f", e = e, ok = ok, fail = fail }
-  elseif k == "W" and #d == 92 then            -- one leader window in full
-    local _, s, o, stake, cc, name = string.unpack("<c1I4BI4c2c16", d)
-    local dd = {}
-    for j = 0, 3 do
-      local st, tx, fail, fee, tip, ms, cu = string.unpack("<BI2I2I4I4I2B", d, 29 + j * 16)
-      dd[j + 1] = { st, tx, fail, fee, tip, ms, cu }
-    end
-    return { t = "w", s = s, o = o, k = stake, c = (cc:gsub(" ", "")), n = (name:gsub("[%z ]+$", "")), d = dd }
-  elseif k == "S" and #d == 13 then            -- one of our slots
-    local _, s, i, ok, tx, fee = string.unpack("<c1I4BBI2I4", d)
-    return { t = "slot", s = s, i = i, st = ok == 1 and "ok" or "skip", tx = tx, fee = fee }
-  elseif k == "I" and #d >= 50 then            -- info
-    local _, stake, share, rank, comm, delinq, epoch, pct, msd, leader, done, skip, up, nNext, nLast =
-      string.unpack("<c1I4I2I2I2BI2BI2I2I2I2BBB", d)
-    if #d ~= 50 + nNext * 4 + nLast * 2 then return nil end
-    local name, ver = string.unpack("<c16c8", d, 27)
-    local m = { t = "info", stake = stake, share = share / 1000, rank = rank, delinq = delinq == 1, epoch = epoch,
-      pct = pct, sd = msd, leader = leader, done = done, skip = skip, up = up == 1 and "live" or "reconnecting",
-      next = {}, last = {}, name = (name:gsub("[%z ]+$", "")), ver = (ver:gsub("[%z ]+$", "")) }
-    if comm ~= 0xFFFF then m.comm = comm / 100 end
-    local pos = 51
-    for n = 1, nNext do m.next[n] = string.unpack("<I4", d, pos) pos = pos + 4 end
-    for n = 1, nLast do
-      local v = string.unpack("<I2", d, pos) pos = pos + 2
-      m.last[n] = { v & 0x7FFF, v >> 15 }
-    end
-    return m
-  end
-  return nil
+-- Messages wait for the next tick, and only what still matters is read then: the
+-- newest frame, the newest info, the newest version of each window; slots, lists and
+-- the answer to a choice keep their order. When the link stalls and then delivers ten
+-- seconds at once, reading every message kept the CPU busy past the watchdog (5 s).
+local inbox = { f = nil, info = nil, w = {}, rest = {} }
+local function post(data)
+  local k = data:sub(1, 9)
+  if k == '{"t":"f",' then inbox.f = data
+  elseif k == '{"t":"w",' then
+    local s = tonumber(data:match('^{"t":"w","s":(%d+)'))
+    if s then inbox.w[s] = data else inbox.rest[#inbox.rest + 1] = data end
+  elseif data:sub(1, 12) == '{"t":"info",' and not data:find('"n":', 1, true) then inbox.info = data
+  else inbox.rest[#inbox.rest + 1] = data end
+end
+local function read(data, now)
+  local m = json.decode(data)
+  if type(m) == "table" then dispatch(m, now) end
+end
+local function drain(now)
+  local rest = inbox.rest
+  for i = 1, #rest do read(rest[i], now) rest[i] = nil end
+  if inbox.info then read(inbox.info, now) inbox.info = nil end
+  for s, d in pairs(inbox.w) do read(d, now) inbox.w[s] = nil end
+  if inbox.f then read(inbox.f, now) inbox.f = nil end
 end
 
--- Bluetooth costs the badge ~30 KB of its internal RAM, which the screen's objects
--- need too: it is turned on only when Wi-Fi can't serve (connect, below).
-local bleOn = false
-local function startBle()
-  if bleOn or not ble then return end
-  bleOn = true
-  if not ble.on() then return end
-  local function advertise() ble.advertise({ name = "FD Badge", service = NUS, connectable = true }) end
-  local served = ble.serve({ service = NUS, chars = { { uuid = RX, write = true } } }, function(event, a, b)
-    if event == "open" then
-      toast("Phone connected")
-    elseif event == "write" and type(b) == "string" then
-      local ok, m = pcall(unpackMsg, b)          -- anyone in range can write: check everything
-      if ok and m then
-        local now = sys.millis()
-        lastBle = now
-        dispatch(m, now)
-      end
-    elseif event == "close" then
-      advertise()
-    end
-  end)
-  if served then advertise() end
-end
-
--- Wi-Fi. Asking for a socket keeps the radio busy for a few seconds, which Bluetooth
--- shares: never ask while the phone is feeding us, and rarely once refused.
-local retry, fails = 1000, 0
-local connect
-connect = function()
-  if sys.millis() - lastBle < 10000 then timer.after(60000, connect) return end
+-- Refused, it asks again rarely; dropped, again soon, then less and less often.
+local retry = 1000
+local function connect()
   sock = ws.open(RELAY .. (fol.id and ("?v=" .. fol.id) or ""), function(event, data)
     if event == "open" then
-      retry, sockOpen, fails = 1000, true, 0
+      retry, sockOpen = 1000, true
     elseif event == "message" then
-      local m = json.decode(data)
-      if type(m) == "table" then dispatch(m, sys.millis()) end
+      lastMsg = sys.millis()
+      post(data)
     else
       sockOpen = false
       local refused = data == "denied" or data == "not linked" or data == "host not allowed"
       if not live then status(refused and "Wi-Fi denied" or tostring(data)) end
-      fails = fails + 1
-      if refused or data == "offline" or fails >= 2 then startBle() end   -- a phone may feed us instead
       timer.after(refused and 600000 or retry, connect)
       retry = math.min(retry * 2, 30000)
     end
@@ -1264,6 +1214,7 @@ connect()
 
 function on_tick(ms)
   local now = sys.millis()
+  drain(now)
   if live and now - lastMsg > 3000 then      -- nothing for 3 s: say so, don't just freeze
     live = false
     tpsOk, tpsFail = -1, -1

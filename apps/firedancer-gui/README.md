@@ -34,11 +34,11 @@ GAUCHE et DROITE passent d'une vue à l'autre ; la bande en haut de l'écran ind
 
 ## Choisir le validateur
 
-Par défaut, l'app suit le validateur du dashboard (« Firedancer Devel » sur celui de Jump). Deux façons d'en suivre un autre, en Wi-Fi :
+Par défaut, l'app suit le validateur du dashboard (« Firedancer Devel » sur celui de Jump). Deux façons d'en suivre un autre :
 - dans SCHEDULE, sélectionner un slot puis SELECT : son leader ;
 - dans VALIDATOR, SELECT : une liste avec le validateur par défaut, les derniers choisis, puis les 20 plus gros par stake (avec leur version : 4.x pour Agave, 26.x pour Firedancer).
 
-Le badge garde le choix (stockage de l'app) et le redemande au relais à chaque connexion. En Bluetooth, le téléphone relaie le validateur par défaut : l'app affiche « Choosing needs Wi-Fi ».
+Le badge garde le choix (stockage de l'app) et le redemande au relais à chaque connexion.
 
 ## LED
 
@@ -63,33 +63,25 @@ Le Worker vérifie le ticket signé que le badge envoie à l'ouverture du websoc
 
 ## Installer
 
-**Depuis le store** (une fois publiée) : rien d'autre à faire, l'app passe par le Wi-Fi.
+**Depuis le store** (une fois publiée) : rien d'autre à faire.
 
-**Pour tester** : déposer `dist/firedancer-gui.zip` (`main.lua` et `app.json`) sur `/apps/submit` du site du badge, puis **Run on badge** (Chrome sur ordinateur, badge en USB-C) : un test run de 12 h, Wi-Fi compris. Après une modification :
+**Pour tester** : déposer `dist/firedancer-gui.zip` (`main.lua` et `app.json`) sur `/apps/submit` du site du badge, puis **Run on badge** (Chrome sur ordinateur, badge en USB-C) : un test run de 12 h. Hors store et hors test run, le serveur du badge refuse le websocket : l'app affiche « Wi-Fi denied ». Après une modification :
 
 ```sh
 cd apps/firedancer-gui && zip -j dist/firedancer-gui.zip main.lua app.json
 ```
 
-**Sans le store, avec un téléphone Android** : une app copiée hors store n'a pas droit au Wi-Fi (« Wi-Fi denied »). Le badge allume alors son Bluetooth, et un téléphone relaie les données :
-- la page `https://firedancer-gui-relay.theo-b59.workers.dev/install#k=<clé>` (Chrome sur Android) installe l'app en USB (WebUSB vers la puce CH340, `lua put`) puis relaie en Bluetooth tant qu'elle reste ouverte ;
-- ou l'app Android (`android/`, téléchargeable depuis la page), qui fait la même chose dans un service en arrière-plan.
-
-La clé `k` est le secret `PHONE_KEY` du Worker.
-
 ## Déployer
 
 ```sh
-cd apps/firedancer-gui/worker && npx wrangler deploy        # le relais, la page, main.lua et app.json servis
+cd apps/firedancer-gui/worker && npx wrangler deploy
 ```
 
 Après une modification du relais (`core.ts` ou `worker/`), changer `RELAY_NAME` dans `worker/src/index.ts` : un Durable Object déjà lancé garde son ancien code tant que des badges y sont connectés. Réglages : les `[vars]` de `worker/wrangler.toml` (`FD_WS`, `IDENTITY`, `VOTE`, `RPC_URL`, `APP`, `FRAME_MS`).
 
-L'app Android se compile sans Gradle (`android/build.sh`, voir `CLAUDE.md` à la racine) et doit être signée avec la même clé à chaque mise à jour.
-
 ## Performances
 
-`on_tick` tourne toutes les 30 ms. Sur le badge, l'écran coûte ~1,4 µs par pixel redessiné, sur le même processeur que l'app et le Wi-Fi. L'app ne redessine donc que ce qui change : rien de grand ne glisse (la liste et le carrousel sautent), les grands canevas sont redessinés une fois par slot ou quand leur image change, ce qui s'anime seul vit dans de petits canevas à 10 Hz au plus, et les comptes à rebours n'affichent les dixièmes que dans leurs 10 dernières secondes. Le Bluetooth (~30 Ko de RAM interne) ne s'allume que si le Wi-Fi ne peut pas servir.
+`on_tick` tourne toutes les 30 ms. Sur le badge, l'écran coûte ~1,4 µs par pixel redessiné, sur le même processeur que l'app et le Wi-Fi. L'app ne redessine donc que ce qui change : rien de grand ne glisse (la liste et le carrousel sautent), les grands canevas sont redessinés une fois par slot ou quand leur image change, ce qui s'anime seul vit dans de petits canevas à 10 Hz au plus, et les comptes à rebours n'affichent les dixièmes que dans leurs 10 dernières secondes. L'app n'utilise pas le Bluetooth : il prendrait ~30 Ko de la RAM interne dont l'écran a besoin.
 
 Mesuré sur le badge (firmware de diagnostic, `top`, 2026-11-15) :
 
@@ -102,6 +94,6 @@ Mesuré sur le badge (firmware de diagnostic, `top`, 2026-11-15) :
 
 ## Tests
 
-Sans badge, `tools/` fait tourner le vrai `main.lua` dans un simulateur de l'écran (Lua 5.5, les polices du badge, le coût de l'écran mesuré sur le badge), sur un enregistrement du relais (Wi-Fi ou Bluetooth : les deux doivent donner les mêmes écrans) ou branché sur un relais qui tourne. Il signale les textes qui passeraient à la ligne sur le badge. Le mode d'emploi est dans `CLAUDE.md` à la racine du dépôt.
+Sans badge, `tools/` fait tourner le vrai `main.lua` dans un simulateur de l'écran (Lua 5.5, les polices du badge, le coût de l'écran mesuré sur le badge), sur un enregistrement du relais ou branché sur un relais qui tourne. Il signale les textes qui passeraient à la ligne sur le badge. Le mode d'emploi est dans `CLAUDE.md` à la racine du dépôt.
 
-Testé sur le badge (firmware officiel 2.1.0, test run) : le Wi-Fi, les trois vues, la pause du leader schedule, le choix du validateur, et la charge ci-dessus. Le chemin Bluetooth, la page d'installation et l'app Android ont marché sur le badge dans des versions précédentes.
+Testé sur le badge (firmware officiel 2.1.0, test run) : les trois vues, la pause du leader schedule, le choix du validateur, et la charge ci-dessus.

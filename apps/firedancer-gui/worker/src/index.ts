@@ -4,9 +4,6 @@
 //   GET /live      the badge's WebSocket (badge_ticket checked, see LUA_API.md "ws");
 //                  ?v=<identity> follows that validator (core.ts: "follow", "list")
 //   GET /status    whether it is following the feed, and the latest info and frame
-//   GET /app/firedancer-gui.apk?k=<PHONE_KEY>  the Android relay app (android/), from KV
-//   GET /install   a page for a phone: installs the app on the badge over USB, then feeds
-//                  it over Bluetooth from GET /phone?k=<PHONE_KEY> (the same messages)
 //
 // The object follows the feed only while a badge is connected (and 30 s after the
 // last one left), so it costs nothing when nobody is watching: the first badge
@@ -19,39 +16,16 @@
 // Settings are the [vars] of wrangler.toml.
 
 import { Relay, Hub, Follow, fromBadgeSocket } from '../../core';
-import page from './install.html';
-import mainLua from '../../main.lua';
-import manifest from '../../app.json';
 
 interface Env {
   RELAY: DurableObjectNamespace;
   FD_WS: string; IDENTITY: string; VOTE: string; RPC_URL: string; APP: string;
   BADGE_SERVER: string; FRAME_MS: string; DEV_NO_TICKET?: string;
-  PHONE_KEY?: string;                     // a secret: lets the /install page's phone follow the relay
-  FILES: KVNamespace;                     // firedancer-gui.apk (it holds PHONE_KEY: served with the key only)
 }
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const u = new URL(req.url);
-    // The phone page: installs the app over USB and feeds the badge over Bluetooth.
-    if (u.pathname === '/install') return new Response(page, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
-    if (u.pathname === '/app/main.lua') return new Response(mainLua, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
-    if (u.pathname === '/app/app.json') return new Response(JSON.stringify(manifest, null, 2) + '\n', { headers: { 'Content-Type': 'application/json' } });
-    if (u.pathname === '/app/firedancer-gui.apk') {
-      const k = u.searchParams.get('k') ?? '';
-      if (!env.PHONE_KEY || k.length !== env.PHONE_KEY.length || !sameText(k, env.PHONE_KEY)) return new Response('no', { status: 403 });
-      const apk = await env.FILES.get('firedancer-gui.apk', 'arrayBuffer');
-      if (!apk) return new Response('no app uploaded yet', { status: 404 });
-      return new Response(apk, { headers: { 'Content-Type': 'application/vnd.android.package-archive',
-        'Content-Disposition': 'attachment; filename="firedancer-gui.apk"', 'Cache-Control': 'no-store' } });
-    }
-    if (u.pathname === '/phone') {
-      if (req.headers.get('Upgrade') !== 'websocket') return new Response('a WebSocket, please', { status: 426 });
-      const k = u.searchParams.get('k') ?? '';
-      if (!env.PHONE_KEY || k.length !== env.PHONE_KEY.length || !sameText(k, env.PHONE_KEY)) return new Response('no', { status: 403 });
-      return env.RELAY.get(env.RELAY.idFromName(RELAY_NAME)).fetch(req);
-    }
     if (u.pathname !== '/live' && u.pathname !== '/status') return new Response('Firedancer GUI relay', { status: 404 });
     if (u.pathname === '/live') {
       // The ticket is checked here, not in the object: this code always runs with the
@@ -68,13 +42,7 @@ export default {
 // The relay object's name. A running object keeps the code it started with while sockets
 // hold it open, even across deploys: change this with any change to the relay so the next
 // connection gets an object running the new code (the old one stops once its sockets go).
-const RELAY_NAME = 'relay-7';
-
-function sameText(a: string, b: string) {   // compared in full, whatever differs
-  let d = 0;
-  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return d === 0;
-}
+const RELAY_NAME = 'relay-8';
 
 export class RelayDO {
   private relay: Relay;
@@ -164,7 +132,7 @@ export class RelayDO {
       if (!this.relay.main.vote) await this.readVote(this.relay.main);
       return Response.json({ badges: this.hub.size, info: this.relay.info(), frame: this.relay.est ? this.relay.frame() : null });
     }
-    // /live (the Worker above has checked the badge's ticket) or /phone.
+    // /live: the Worker above has checked the badge's ticket.
     const [client, server] = Object.values(new WebSocketPair());
     server.accept();
     this.hub.add(server, u.searchParams.get('v') ?? '');

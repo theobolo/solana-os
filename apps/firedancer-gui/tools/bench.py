@@ -1,9 +1,8 @@
 """Simulate the badge's screen for a Lua app: runs main.lua in Lua 5.5 with the badge's
-ui / led / ws / ble / storage / timer imitated, draws the screen with PIL in the badge's
+ui / led / ws / storage / timer imitated, draws the screen with PIL in the badge's
 own fonts and theme colours, charges each tick what LVGL would redraw, and saves frames.
 
 python3 bench.py main.lua ws  rec.ws  OUTDIR      a recording of the relay's JSON messages
-python3 bench.py main.lua ble rec.hex OUTDIR      the same, packed as the phone sends them
 python3 bench.py main.lua live ws://localhost:8090/live OUTDIR   a running relay (SECONDS)
 
 Env: KEYS="ms:key,...", SHOT_MS, STORE (the app's storage, JSON), EXTRA (ws mode: more
@@ -228,11 +227,6 @@ g.storage["get"] = lambda k: to_lua(STORE.get(k.decode() if isinstance(k, bytes)
 def store_set(k, v): STORE[k.decode() if isinstance(k, bytes) else k] = v
 g.storage["set"] = store_set
 g.storage["remove"] = lambda k: STORE.pop(k.decode() if isinstance(k, bytes) else k, None)
-g.ble = L.table()
-g.ble["on"] = lambda: True
-def serve(defn, f): cb["ble"] = f; return True
-g.ble["serve"] = serve
-g.ble["advertise"] = lambda *a: True
 L.execute("pcall_ok = pcall")
 
 # instruction counting: a count hook every 100 VM instructions
@@ -312,8 +306,7 @@ if os.environ.get("EXTRA") and MODE == "ws":   # more messages ("ms {json}" line
     rec.sort(key=lambda r: r[0])
 shots = {}
 i = 0
-if MODE == "ble": run_cb("ws", cb["ws"], "close", "denied")
-else: run_cb("ws", cb["ws"], "open")
+run_cb("ws", cb["ws"], "open")
 END = int(os.environ.get("SECONDS", "45")) * 1000 if MODE == "live" else rec[-1][0] + 500
 T0 = time.time()
 while clock[0] < END:
@@ -322,8 +315,7 @@ while clock[0] < END:
         while not LIVEQ.empty():
             run_cb("ws", cb["ws"], "message", LIVEQ.get())
     while i < len(rec) and rec[i][0] <= clock[0]:
-        if MODE == "ble": run_cb("ble", cb["ble"], "write", "rx", bytes.fromhex(rec[i][1]))
-        else: run_cb("ws", cb["ws"], "message", json.dumps(json.loads(rec[i][1])["m"]))
+        run_cb("ws", cb["ws"], "message", json.dumps(json.loads(rec[i][1])["m"], separators=(",", ":")))   # as the relay writes it
         i += 1
     for t in list(timers):
         if clock[0] >= t[0]:

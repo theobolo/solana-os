@@ -18,15 +18,3 @@ RPC_URL = "https://api.mainnet-beta.solana.com"
 APP = "firedancer-gui"                                         # the badge app's id (app.json)
 BADGE_SERVER = "https://badge-api.solana.com"
 FRAME_MS = "100"
-
-# main.lua and the phone page ship inside the Worker (GET /app/main.lua, /install)
-[[rules]]
-type = "Text"
-globs = ["**/*.lua", "**/*.html"]
-fallthrough = true
-
-# Files too big or too private for the code: the Android app (android/build.sh), put with
-#   npx wrangler kv key put --binding FILES firedancer-gui.apk --path ../android/build/firedancer-gui.apk --remote
-[[kv_namespaces]]
-binding = "FILES"
-id = "c912f1d378e34a77be0e27045ff2592f"
