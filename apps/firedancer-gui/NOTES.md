@@ -37,7 +37,9 @@ Speed. on_tick runs every 30 ms, and on the badge the screen costs ~1.4 us a pix
 redrawn (measured with this app: 1.0 to 1.7 by view) plus ~1 ms an area, all on the
 one CPU the app shares. So nothing is redrawn unless it changed and nothing big
 moves: what changes on its own (the slot being made, the spinning icons) lives in
-small canvases of its own, redrawn at most ten times a second; big canvases are
+small canvases of its own, redrawn at most ten times a second (the carousel's slot
+cells every tick since 1.0.3: a cell is 264 pixels, and at 10 Hz a 215 ms slot filled
+in two steps); big canvases are
 redrawn once a slot or when their picture changes, never to animate a slide; labels,
 colours and LEDs are set only when they change, and countdowns show tenths only in
 their last 10 s. Each view stays under ~200,000 pixels a second (~70% of the CPU).

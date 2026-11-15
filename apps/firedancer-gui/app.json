@@ -1,7 +1,7 @@
 {
   "id": "firedancer-gui",
   "name": "Firedancer GUI",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "author": "@ghosty",
   "summary": "A Firedancer dashboard on the badge: leaders, slots, fees and tips, live.",
   "icon": "charge",

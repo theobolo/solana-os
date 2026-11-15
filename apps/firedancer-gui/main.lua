@@ -463,11 +463,8 @@ end
 
 -- When the next leader takes over the cards move one place left at once: sliding the
 -- whole strip over a few frames cost a fifth of the LIVE view's screen time.
-local cellsAt = -1               -- when the moving cells were last drawn (10 times a second)
 local function drawCarousel(now, live_s, f)
   local cur = est - est % 4
-  local step = now // 100 ~= cellsAt
-  if step then cellsAt = now // 100 end
   local barsDirty = false
   for k = 1, 5 do
     local card, w = cards[k], winAt(cur + (k - 3) * 4)
@@ -492,9 +489,9 @@ local function drawCarousel(now, live_s, f)
       card.tx:color(isCur and "text" or "dim")
     end
     -- the four slots, each redrawn only when what it shows changes (a canvas call costs
-    -- ~50 us): the one being made fills up, one made and waiting pulses, at 10 Hz
+    -- ~50 us): the one being made fills up, one made and waiting pulses, every tick
     if frame then card.keys = nil end
-    if changed or ((animated(w, live_s) or card.anim) and step) then
+    if changed or animated(w, live_s) or card.anim then   -- every tick: a cell is 264 pixels
       card.anim = animated(w, live_s)
       local c, keys = card.cells.o, card.keys
       if not keys then
@@ -504,7 +501,7 @@ local function drawCarousel(now, live_s, f)
       end
       for j = 0, 3 do
         local st, s = w.d[j + 1][1], w.s + j
-        local key = st >= 2 and st or (s == live_s and 10 + math.floor(22 * f)) or (s < live_s and st == 1 and 100 + now // 100) or 0
+        local key = st >= 2 and st or (s == live_s and 10 + math.floor(22 * f)) or (s < live_s and st == 1 and 100 + now // 30) or 0
         if keys[j + 1] ~= key then
           keys[j + 1] = key
           cell(c, j * 13, 0, 11, 24, st, s, live_s, f, now)
