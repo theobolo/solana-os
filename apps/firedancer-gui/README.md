@@ -10,6 +10,8 @@ Un dashboard Firedancer sur le badge Solana Breakpoint : les leaders, les slots,
 
 Les captures SCHEDULE, VALIDATOR et la liste viennent du badge. LIVE vient du simulateur (`tools/bench.py`, avec les polices du badge) : sur le badge, la capture d'écran passe ~20 s sur le port série, et l'app affiche « no data » pendant ce temps.
 
+Comment le code est construit, et pourquoi il dessine comme il le fait : `NOTES.md`.
+
 ## Les vues
 
 GAUCHE et DROITE passent d'une vue à l'autre ; la bande en haut de l'écran indique laquelle.

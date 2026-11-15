@@ -21,6 +21,11 @@ version goes through `/apps/submit?id=firedancer-gui` ("Edit your app"): load
   `wss://gui.firedancer.io/websocket` (Jump's dashboard). Each badge follows one
   validator: by default the dashboard's own (or `IDENTITY` / `VOTE`), else the one it
   asks for (`/live?v=<identity>`, or the messages `follow` and `list`, top of core.ts).
+- `NOTES.md`: how main.lua works and why it draws the way it does (its long comments
+  live there: the store takes at most 64 KB of source a file; main.lua is ~57 KB). A
+  split into modules (`kit`, `schedule`, `validator`) is on the local branch
+  `wip/firedancer-modules`: pixel-identical, but ~+0.5% CPU on SCHEDULE measured on the
+  badge, so not shipped.
 - `tools/`: tests (below).
 - Removed 2026-11-15 (the owner won't use it; in git history before that date): the
   Bluetooth path for an app outside the store (`worker/src/install.html`, a Chrome page
