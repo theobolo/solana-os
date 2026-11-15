@@ -58,6 +58,12 @@ server-mediated call, `ws` included (`"denied"`): it shows "Wi-Fi denied".
   wrapper, toasts and the picker go through `pcall`. Bluetooth would take ~30 KB of that
   SRAM (with it on, the diagnostic build stopped the app with "label:text: low on
   memory"): the app no longer uses it.
+- **The badge's Wi-Fi sleeps** (modem sleep, `WIFI_PS_MIN_MODEM`, `main/core/os_radio.c`)
+  unless something keeps it busy; no Lua API changes that. Asleep on the hotel Wi-Fi it
+  lost packets now and then and the relay's TCP backed off: no data for 8 to 25 s, then
+  a burst (5 runs of 6 without Bluetooth, 0 of 3 with it on: Bluetooth had hidden it).
+  The relay's own feed never stalled (`/status` polled meanwhile). main.lua sends "{}"
+  every 500 ms; 2 runs of 4 minutes: no stall over 2 s.
 - **Bursts after a stall**: the link (hotel Wi-Fi, -77 dBm) sometimes stalls 8 to 25 s,
   then delivers it all at once. Reading every message then kept the CPU busy past the
   task watchdog (5 s, official firmware). main.lua queues messages (`post`) and reads

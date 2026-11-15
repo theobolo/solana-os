@@ -28,6 +28,7 @@
 //                      on their way. The answer: info, the windows, a frame.
 //                      /live?v=<identity> says it when connecting.
 //   {"t":"list"}
+//   Anything else is ignored: the badge sends "{}" twice a second to keep its Wi-Fi awake.
 //
 // Slot state digits: 0 future, 1 being made, 2 completed, 3 notarized / confirmed,
 // 4 rooted / finalized, 5 skipped.

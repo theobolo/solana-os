@@ -1208,6 +1208,13 @@ local function connect()
 end
 connect()
 
+-- Twice a second the badge sends the relay "{}" (it ignores it). The badge's Wi-Fi
+-- sleeps between the access point's beacons unless something keeps it busy; asleep,
+-- it now and then lost packets and the relay's TCP backed off: no data for 8 to 25 s,
+-- then all of it at once (5 runs of 6, 4 minutes each). Bluetooth on had hidden it.
+-- Sending wakes the radio, and the waiting packets come with it: 0 stalls in 8 minutes.
+timer.every(500, function() if sock and sockOpen then sock:send("{}") end end)
+
 
 ---------------------------------------------------------------------------------
 -- Every tick (30 ms)
