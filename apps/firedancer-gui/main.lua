@@ -43,13 +43,12 @@
 -- colours and LEDs are set only when they change, and countdowns show tenths only in
 -- their last 10 s. Each view stays under ~200,000 pixels a second (~70% of the CPU).
 -- Labels wrap at their width, and the fonts aren't monospaced: names are cut where they
--- fit (fit). The badge holds 128 objects: this app uses 125.
+-- fit (fit). The badge holds 128 objects: this app uses 124.
 --
 -- Numbers: a badge has 32-bit integers and 32-bit floats. Slot numbers (469 million)
 -- stay integers; only differences between slots ever become floats.
 
 local RELAY = "wss://firedancer-gui-relay.theo-b59.workers.dev/live"   -- your relay; its host goes in app.json "hosts"
-local OWNER = "ghosty"
 
 ---------------------------------------------------------------------------------
 -- Colours and helpers
@@ -217,7 +216,6 @@ ui.image(6, 5, {                 -- a flame, for Firedancer
 }, { palette = { t = TEAL, o = OURS } })
 ui.label(24, 4, "FIREDANCER", { size = 20 })
 local dot = R(156, 12, 6, 6, { color = "dim", radius = 3 })
-ui.label(166, 9, "@" .. OWNER, { size = 12, color = "aqua" })
 local tpsL = L(216, 3, "", { size = 20, w = 62, align = "right" })
 local tpsU = L(282, 10, "TPS", { size = 12, color = "dim" })
 local statusL = L(216, 9, "", { size = 12, color = "orange", w = 96, align = "right" })   -- instead, while no data comes
@@ -796,9 +794,11 @@ local function schedLive()       -- back to following live
   sel, frozen, scrollTo = nil, nil, 0
 end
 
--- UP / DOWN in the schedule: slot by slot. DOWN goes back in time; UP comes forward,
--- and past the newest slot made, back to following live. BACK lets go too. While a slot
--- is selected the list stays as it was: new leaders wait.
+-- UP / DOWN in the schedule: a row at a time, as the screen shows them. The cards go
+-- back in time downwards but each lists its four slots in order, so DOWN is the next
+-- slot within a card, then the first slot of the older card below. UP past the newest
+-- slot made, or BACK, follows live again. While a slot is selected the list stays as
+-- it was: new leaders wait.
 local function schedSelect(dir, live_s)
   if not sel then frozen = est - est % 4 end
   buildItems()
@@ -813,12 +813,15 @@ local function schedSelect(dir, live_s)
   if not newest then frozen = nil return end
   if not sel then
     sel = newest
-  elseif dir > 0 then
-    if sel > oldest then sel = sel - 1 end
-  elseif sel >= newest then
-    schedLive()
+  elseif dir > 0 then                            -- down a row
+    if sel % 4 < 3 and sel < newest then sel = sel + 1
+    elseif sel - sel % 4 - 4 >= oldest then sel = sel - sel % 4 - 4 end
+  elseif sel % 4 > 0 then                        -- up a row, within the card
+    sel = sel - 1
+  elseif sel + 4 <= newest then                  -- up to the last row made of the newer card
+    sel = math.min(sel + 7, newest)
   else
-    sel = sel + 1
+    schedLive()
   end
 end
 
