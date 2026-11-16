@@ -57,10 +57,31 @@ server-mediated call, `ws` included (`"denied"`): it shows "Wi-Fi denied".
   ~1 ms; decoding and reading a message 0.5 (`f`) to 5 ms (`info`), ~4% of the CPU in all.
   The simulator charges only VM instructions and screen pixels, not this: profile on the
   badge (a copy of main.lua that sums `sys.millis()` by section of `on_tick` over 5 s and
-  prints it). Count calls, not pixels: the chart is a conveyor canvas (2x the screen,
+  prints it). Count calls, not pixels: the chart is a conveyor canvas (1020 px wide,
   moved 5 px a slot, only new or changed bars drawn), carousel cells redraw one by one,
   schedule backgrounds only when their look changes. LIVE Lua 261 -> 153 ms/s, 25 -> 28
   ticks/s; SCHEDULE 244 -> 167; VALIDATOR 124 -> 108.
+- **Freezes are gaps between ticks**, and an average hides them (2026-11-16, official
+  2.2.0). LIVE held ~27 ticks/s at ~50% CPU and still froze 100 to 190 ms 1.2 times a
+  second: when a leader took over, one tick did the five cards (~35 ms of Lua) and the
+  chart, then the screen took ~65 ms for the 39 kpx. The simulator had said ~60 ms.
+  `tools/gaps.lua`, appended to a copy of main.lua, prints the gaps between ticks and
+  each tick's Lua time: it needs no diagnostic build. Spread what a tick does: a card a
+  tick, none on the tick the chart moves; gaps over 65 ms went 1.22 -> 0.03 a second,
+  ticks 27.2 -> 29.9 a second (the cap is 30: `LH_TICK_MS` 30 on 10 ms RTOS ticks),
+  2 x 60 s each, balanced order. Aim: no tick over ~20 ms of Lua, ~20 kpx.
+- **A canvas call redraws the whole canvas** that is on screen (`lv_obj_invalidate`,
+  `main/lua/lua_img.c`), whatever it drew: draw on a big canvas once per step, with
+  everything that changed. A canvas is **1024 px a side at most** (the badge stops the
+  app: "ui.canvas: 1 to 1024 pixels per side"; the simulator checks it since then), and
+  another canvas can't be the source of `c:image`.
+- **What a frame costs, by kind of object** (official 2.2.0, a test app alone, each tick
+  dirtying enough that the frame outlasts the tick, so ticks/s give the frame time):
+  64 kpx of canvas 52 ms a frame (~0.8 us a pixel), of plain rect 40 ms (~0.6), of
+  canvas over a rect 55 ms, of a 1020 px wide canvas half off screen 51 ms (width is
+  free), 58 kpx of labels 60 ms (~1.0), 25 kpx in 20 small canvases 35 ms (~0.65 ms an
+  area more). The SPI bus alone is 0.4 us a pixel (40 MHz, 16 bits). With the relay's
+  traffic and the app's own Lua the same pixels cost more (the ~1.4 us above).
 - **Measure on the badge**, not only in the simulator: flash the diagnostic build
   (`sdkconfig.stats`, below) and run `top 60` (per-task CPU, LCD kpx/s, LVGL's flush
   wait) while `key right` switches views; time Lua functions with a copy of main.lua
@@ -166,6 +187,15 @@ LIVE 59% CPU / 135 kpx/s (was ~65% / 171), SCHEDULE 65% / 140 (was ~69% / 179),
 SCHEDULE paused 30% / 15, VALIDATOR 31% / 33 (was ~49%). Then the Bluetooth path was
 removed (the owner's call).
 
+2026-11-16, smoothness pass (1.0.3, not published yet; official 2.2.0): the cards take a
+new leader one a tick, the chart's bars are drawn when it moves and it goes round
+without being drawn whole (was every 13 s, ~45 ms of Lua), the epoch ring redraws only
+the pixels that change (was ~75 ms). On the badge, LIVE: gaps over 65 ms between ticks
+1.22 -> 0.03 a second, 27.2 -> 29.9 ticks/s, Lua's ticks over 20 ms 1.27 -> 0.10 a
+second, no error or watchdog over the three views. Simulator: LIVE 151 -> 131 kpx/s,
+the worst tick 39 -> 21 kpx, the chart pixel for pixel the same but its newest bar.
+CPU not measured (no `top` on 2.2.0).
+
 The Wi-Fi path needs the badge server's ticket: the store, or a test run from
 `/apps/submit` ("Run on badge", desktop Chrome, 12 h). `tools/badgeput.py` copies a
 new main.lua onto a badge that has the app; it runs with Wi-Fi while a test run lasts.
@@ -215,9 +245,16 @@ output, read the port in a loop (opening it resets the badge on macOS).
 
 Backup: `~/badge-backup/badge-backup.bin` on the owner's Mac (16 MB, sha256
 0cfe48b2...455f). It shows the official 2.1.0 in `ota_1` (booted) and 2.0.0 in `ota_0`;
-the test builds go to `ota_0` (`write_flash 0xF000 ota_data_initial.bin 0x20000 ...`).
-Back to the official firmware: write the backup's 8 KB at 0xF000 (the otadata, which
+the test builds went to `ota_0` (`write_flash 0xF000 ota_data_initial.bin 0x20000 ...`).
+Back to that firmware: write the backup's 8 KB at 0xF000 (the otadata, which
 boots `ota_1`); the whole file only if something else broke.
+
+2026-11-15: the badge updated itself over the air to the official **2.2.0** (upstream
+PR #21, on ESP-IDF master; compiled Nov 15 14:26), into `ota_0`: the diagnostic build
+that was there is gone, so no `top` until one is built from 2.2.0's source and flashed
+(to `ota_1`, over 2.1.0: ask the owner first). `build-stats/ota_data_initial.bin` at
+0xF000 now boots that official 2.2.0. On 2.2.0 the console starts an app with
+`lua run <id>` as before (`open <id>` says "no app").
 
 If the badge keeps up: port `core.ts` to C behind a Lua module (streaming zstd, a
 streaming JSON reader for the 370 KB epoch and the multi-MB peers messages), so

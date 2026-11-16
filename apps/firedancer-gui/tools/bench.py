@@ -133,6 +133,8 @@ def rect(x, y, w, h, o=None):
 def gradient(x, y, w, h): return methods(Obj("grad", x, y, w=int(w), h=int(h)))
 def bar(x, y, w, h, v): return methods(Obj("bar", x, y, w=int(w), h=int(h), value=v))
 def canvas(x, y, w, h, o=None):
+    if not (1 <= int(w) <= 1024 and 1 <= int(h) <= 1024):       # the badge refuses it (lua_img.c)
+        raise RuntimeError("ui.canvas: 1 to 1024 pixels per side")
     img = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
     c = opt(o, "color")
     if c is not None: img.paste(rgb(c) + (255,), (0, 0, int(w), int(h)))

@@ -83,7 +83,7 @@ Après une modification du relais (`core.ts` ou `worker/`), changer `RELAY_NAME`
 
 ## Performances
 
-`on_tick` tourne toutes les 30 ms. Sur le badge, l'écran coûte ~1,4 µs par pixel redessiné, sur le même processeur que l'app et le Wi-Fi. L'app ne redessine donc que ce qui change : rien de grand ne glisse (la liste et le carrousel sautent), les grands canevas sont redessinés une fois par slot ou quand leur image change, ce qui s'anime seul vit dans de petits canevas à 10 Hz au plus, et les comptes à rebours n'affichent les dixièmes que dans leurs 10 dernières secondes. L'app n'utilise pas le Bluetooth : il prendrait ~30 Ko de la RAM interne dont l'écran a besoin.
+`on_tick` tourne toutes les 30 ms. Sur le badge, l'écran coûte ~1,4 µs par pixel redessiné, sur le même processeur que l'app et le Wi-Fi. L'app ne redessine donc que ce qui change : rien de grand ne glisse (la liste et le carrousel sautent), les grands canevas sont redessinés une fois par slot ou quand leur image change, ce qui s'anime seul vit dans de petits canevas, et les comptes à rebours n'affichent les dixièmes que dans leurs 10 dernières secondes. Le travail est aussi étalé dans le temps : à chaque nouveau leader, les cartes du carrousel changent une par tick, et jamais sur le tick où le graphique avance. Tout faire d'un coup figeait l'image 100 à 190 ms environ une fois par seconde ; il reste un écart de plus de 65 ms toutes les 30 s environ (mesuré sur le badge, `tools/gaps.lua`). L'app n'utilise pas le Bluetooth : il prendrait ~30 Ko de la RAM interne dont l'écran a besoin.
 
 Mesuré sur le badge (firmware de diagnostic, `top`, 2026-11-15) :
 

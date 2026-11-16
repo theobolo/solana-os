@@ -60,15 +60,31 @@ and a small one for its four slots, so a slot filling up redraws 52 x 24 pixels,
 not the card. The cards' transaction bars grow as their slots come: they are one
 see-through 320 x 2 strip over the cards, not five frames redrawn.
 
+When a leader takes over, the five cards take their new leader one a tick, left to
+right, and none on the tick the chart moves. All five at once, with the chart, was one
+tick of ~35 ms of Lua (five names, five counts, twenty cells) and then ~65 ms of
+screen (39,000 pixels): the picture froze 100 to 190 ms about once a second (measured
+on the badge: the gaps between ticks, tools/gaps.lua). A card a tick is ~5 ms and
+4,300 pixels: gaps over 65 ms went from 1.22 to 0.03 a second, ticks from 27.2 to 29.9
+a second (30 is the most there is). Coming back to the view draws all five at once.
+
+The epoch ring is 600 pixels, one call each (~75 ms): only those that change are drawn.
+
 ## LIVE: the TX / SLOT chart
 
 transactions per slot: one bar per slot, 5 px a slot, a step left as each slot is
 made. On the badge each canvas call costs ~50 us whatever its size (a pixel 0.14 us):
 redrawing the 66 bars each slot took ~30 ms, 4.5 times a second. So the chart is a
-conveyor: a canvas twice the screen's width that moves 5 px left each slot, where
-only the new bar and the bars whose data changed are drawn; it is drawn whole only
-when it runs out (every ~62 slots) or the scale changes. Moving it redraws the same
-screen area as before. Its top 12 rows hold only the labels: the canvas starts below.
+conveyor: a canvas 204 columns wide (a canvas is 1024 px a side at most, which the
+simulator checks too) that moves 5 px left each slot, where only the new bar and the
+bars whose data changed are drawn. Any call on a canvas makes the screen redraw all of
+it that shows (`lv_obj_invalidate`, main/lua/lua_img.c), 13,440 pixels here: so bars
+are drawn when the chart moves, once a slot, not as their data comes (a bar that came
+after its slot waits for the next one, ~215 ms). Its last 65 columns are drawn at its
+start too, so when it runs out it goes back 139 columns and the picture is there
+already: drawn whole (~45 ms of Lua) only when the scale changes, where it was every
+62 slots (13 s). Moving it redraws the same screen area as before. Its top 12 rows
+hold only the labels: the canvas starts below.
 
 ## SCHEDULE
 

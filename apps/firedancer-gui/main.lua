@@ -205,11 +205,12 @@ local txBars = V("live", C(0, CAR_Y + CH - 6, 320, 2))
 -- Transactions per slot: a conveyor canvas, only new or changed bars drawn (NOTES.md).
 local CHART_Y, CHART_H, SLOT_W = 104, 54, 5
 local ch = {
-  COLS = 128,                    -- the canvas's columns
+  COLS = 204,                    -- the canvas's columns (a canvas is 1024 px a side at most)
   VIS = 320 // SLOT_W + 1,       -- the slots on screen, back from the live one (66)
   B = nil,                       -- the slot in the canvas's first column; nil: draw it whole
   dirty = {},                    -- slots whose bar changed since drawn
 }
+ch.LAP = ch.COLS - ch.VIS          -- columns from here on are drawn at the start too, for the next lap
 local chart = V("live", C(0, CHART_Y + 12, ch.COLS * SLOT_W, CHART_H - 12, { color = "bg" }))
 local chartMax, chartKey, chartTop = 1000, nil, nil
 V("live", L(6, CHART_Y + 1, "TX / SLOT", { size = 12, color = "dim" }))
@@ -263,10 +264,11 @@ end
 local ringPct = nil
 local function drawRing(pct)
   if pct == ringPct then return end
+  local old, t = ringPct and ringPct / 100, pct / 100
   ringPct = pct
-  local t = pct / 100
-  for _, p in ipairs(ringPx) do
-    ring.o:pixel(p[1], p[2], p[3] <= t and grad(p[3]) or BORDER)
+  for _, p in ipairs(ringPx) do              -- only the pixels that change (all 600: ~75 ms)
+    local on = p[3] <= t
+    if not old or on ~= (p[3] <= old) then ring.o:pixel(p[1], p[2], on and grad(p[3]) or BORDER) end
   end
 end
 
@@ -461,50 +463,58 @@ local function animated(w, live_s)
   return live_s <= w.s + 3 or w.cells:find("[01]") ~= nil
 end
 
--- When the next leader takes over the cards move one place left at once: sliding the
--- whole strip over a few frames cost a fifth of the LIVE view's screen time.
+-- When the next leader takes over the cards move one place left, without sliding (a
+-- fifth of LIVE's screen time, once), one card a tick, and none on the tick the chart
+-- moves: all five with the chart froze the screen ~130 ms a leader (NOTES.md).
 local function drawCarousel(now, live_s, f)
   local cur = est - est % 4
   local barsDirty = false
+  local room = live_s == chartKey
   for k = 1, 5 do
     local card, w = cards[k], winAt(cur + (k - 3) * 4)
     local isCur, ours = k == 3, w.o == 1
-    local bw = math.floor((CW - 8) * math.min(w.tx, 2400) / 2400)
-    local bar = ours and -(bw + 1) or bw + 1     -- its bar's width, negative if orange
-    if card.bar ~= bar then card.bar, barsDirty = bar, true end
     local frame = card.s ~= w.s or card.cur ~= isCur or card.ours ~= ours
-    if frame then                              -- the frame: when another leader comes here
-      card.s, card.cur, card.ours = w.s, isCur, ours
-      local c = card.cv.o
-      c:rect(0, 0, CW, CH, isCur and TEAL or (ours and OURS or BORDER))
-      c:rect(1, 1, CW - 2, CH - 2, ours and OURS_BG or PANEL)
-      if ours then for i = 0, 5 do c:rect(1 + i * 10, 1, i == 5 and 8 or 10, 2, grad(i / 5)) end end
+    local wait = false                         -- (card.s nil: the view was hidden, draw them all)
+    if frame and card.s then
+      if room then room = false else wait = true end
     end
-    local changed = frame or card.w ~= w or card.ver ~= w.ver
-    if changed then                            -- the name, the tx: labels, set only when they change
-      card.w, card.ver = w, w.ver
-      card.name:text(fit(w.n, 12, CW - 4))
-      card.name:color(ours and OURS_TXT or (isCur and "text" or "dim"))
-      card.tx:text(w.tx > 0 and (big(w.tx) .. " tx") or (k > 3 and "next" or ""))
-      card.tx:color(isCur and "text" or "dim")
-    end
-    -- the four slots, each redrawn only when what it shows changes (a canvas call costs
-    -- ~50 us): the one being made fills up, one made and waiting pulses, every tick
-    if frame then card.keys = nil end
-    if changed or animated(w, live_s) or card.anim then   -- every tick: a cell is 264 pixels
-      card.anim = animated(w, live_s)
-      local c, keys = card.cells.o, card.keys
-      if not keys then
-        keys = { -1, -1, -1, -1 }
-        card.keys = keys
-        c:clear(ours and OURS_BG or PANEL)
+    if not wait then
+      local bw = math.floor((CW - 8) * math.min(w.tx, 2400) / 2400)
+      local bar = ours and -(bw + 1) or bw + 1     -- its bar's width, negative if orange
+      if card.bar ~= bar then card.bar, barsDirty = bar, true end
+      if frame then                              -- the frame: when another leader comes here
+        card.s, card.cur, card.ours = w.s, isCur, ours
+        local c = card.cv.o
+        c:rect(0, 0, CW, CH, isCur and TEAL or (ours and OURS or BORDER))
+        c:rect(1, 1, CW - 2, CH - 2, ours and OURS_BG or PANEL)
+        if ours then for i = 0, 5 do c:rect(1 + i * 10, 1, i == 5 and 8 or 10, 2, grad(i / 5)) end end
       end
-      for j = 0, 3 do
-        local st, s = w.d[j + 1][1], w.s + j
-        local key = st >= 2 and st or (s == live_s and 10 + math.floor(22 * f)) or (s < live_s and st == 1 and 100 + now // 30) or 0
-        if keys[j + 1] ~= key then
-          keys[j + 1] = key
-          cell(c, j * 13, 0, 11, 24, st, s, live_s, f, now)
+      local changed = frame or card.w ~= w or card.ver ~= w.ver
+      if changed then                            -- the name, the tx: labels, set only when they change
+        card.w, card.ver = w, w.ver
+        card.name:text(fit(w.n, 12, CW - 4))
+        card.name:color(ours and OURS_TXT or (isCur and "text" or "dim"))
+        card.tx:text(w.tx > 0 and (big(w.tx) .. " tx") or (k > 3 and "next" or ""))
+        card.tx:color(isCur and "text" or "dim")
+      end
+      -- the four slots, each redrawn only when what it shows changes (a canvas call costs
+      -- ~50 us): the one being made fills up, one made and waiting pulses, every tick
+      if frame then card.keys = nil end
+      if changed or animated(w, live_s) or card.anim then   -- every tick: a cell is 264 pixels
+        card.anim = animated(w, live_s)
+        local c, keys = card.cells.o, card.keys
+        if not keys then
+          keys = { -1, -1, -1, -1 }
+          card.keys = keys
+          c:clear(ours and OURS_BG or PANEL)
+        end
+        for j = 0, 3 do
+          local st, s = w.d[j + 1][1], w.s + j
+          local key = st >= 2 and st or (s == live_s and 10 + math.floor(22 * f)) or (s < live_s and st == 1 and 100 + now // 30) or 0
+          if keys[j + 1] ~= key then
+            keys[j + 1] = key
+            cell(c, j * 13, 0, 11, 24, st, s, live_s, f, now)
+          end
         end
       end
     end
@@ -520,10 +530,12 @@ local function drawCarousel(now, live_s, f)
   end
 end
 
-local function chartCol(s, live_s, scale, fresh)   -- one slot's column (fresh: the canvas was just cleared)
+local function chartCol(s, live_s, scale, fresh, i)   -- one slot's column (fresh: the canvas was just cleared)
   local c = chart.o
   local H = CHART_H
-  local x = (s - ch.B) * SLOT_W
+  i = i or s - ch.B
+  if i >= ch.LAP then chartCol(s, live_s, scale, fresh, i - ch.LAP) end   -- the next lap's copy
+  local x = i * SLOT_W
   local function rect(px, y, w, h, col) c:rect(px, y - 12, w, h, col) end   -- y as if the canvas began at CHART_Y
   if not fresh then
     c:rect(x, 0, SLOT_W, H - 12, BG)
@@ -550,8 +562,8 @@ local function chartCol(s, live_s, scale, fresh)   -- one slot's column (fresh: 
 end
 
 local function drawChart(live_s)
-  if live_s == chartKey and not next(ch.dirty) then return end
-  local moved = live_s ~= chartKey
+  if live_s == chartKey then return end       -- once a slot: any call redraws all of it that is on screen
+  local prev = chartKey
   chartKey = live_s
   -- the scale: the tallest bar on screen, rounded up to 250
   local top = 0
@@ -561,15 +573,16 @@ local function drawChart(live_s)
   end
   local max = math.max(500, ((top // 250) + 1) * 250)
   local scale = (CHART_H - 14) / max
-  if not ch.B or max ~= chartMax or live_s - ch.B >= ch.COLS or live_s - ch.VIS < ch.B then
+  if not ch.B or not prev or max ~= chartMax or live_s < prev or live_s - prev > ch.VIS then
     chartMax, ch.B = max, live_s - ch.VIS       -- whole: the live slot in column 66
-    local c = chart.o
-    c:clear(BG)
-    for q = 1, 3 do c:rect(0, CHART_H - (CHART_H * q) // 4 - 12, ch.COLS * SLOT_W, 1, PANEL) end
+    local c, cw = chart.o, (ch.VIS + 1) * SLOT_W    -- the columns to the right are cleared as they come
+    c:rect(0, 0, cw, CHART_H - 12, BG)
+    for q = 1, 3 do c:rect(0, CHART_H - (CHART_H * q) // 4 - 12, cw, 1, PANEL) end
     for s = ch.B, live_s do chartCol(s, live_s, scale, true) end
     for s in pairs(ch.dirty) do ch.dirty[s] = nil end
   else
-    if moved then ch.dirty[live_s], ch.dirty[live_s - 1] = true, true end
+    if live_s - ch.B >= ch.COLS then ch.B = ch.B + ch.LAP end   -- the next lap: its start is drawn already
+    for s = prev, live_s do ch.dirty[s] = true end              -- (prev: it was the live one)
     for s in pairs(ch.dirty) do
       if s >= ch.B and s <= live_s then chartCol(s, live_s, scale, false) end
       ch.dirty[s] = nil
