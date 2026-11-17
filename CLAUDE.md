@@ -66,10 +66,13 @@ server-mediated call, `ws` included (`"denied"`): it shows "Wi-Fi denied".
   second: when a leader took over, one tick did the five cards (~35 ms of Lua) and the
   chart, then the screen took ~65 ms for the 39 kpx. The simulator had said ~60 ms.
   `tools/gaps.lua`, appended to a copy of main.lua, prints the gaps between ticks and
-  each tick's Lua time: it needs no diagnostic build. Spread what a tick does: a card a
-  tick, none on the tick the chart moves; gaps over 65 ms went 1.22 -> 0.03 a second,
-  ticks 27.2 -> 29.9 a second (the cap is 30: `LH_TICK_MS` 30 on 10 ms RTOS ticks),
-  2 x 60 s each, balanced order. Aim: no tick over ~20 ms of Lua, ~20 kpx.
+  each tick's Lua time: it needs no diagnostic build. Spread what a tick does, but not
+  what must change together: one card a tick (gaps over 65 ms 1.22 -> 0.03 a second)
+  let the slot being made fill in a card not yet framed as current, and the owner saw
+  it. Kept: the three middle cards at once, the edges a tick later, the chart after
+  (0.20 a second, ticks 28 -> 29 a second; the cap is 30: `LH_TICK_MS` 30 on 10 ms
+  RTOS ticks), 2 x 60 s each, balanced order. Check what the eye sees, not only the
+  gaps: the simulator's frames, tick by tick.
 - **A canvas call redraws the whole canvas** that is on screen (`lv_obj_invalidate`,
   `main/lua/lua_img.c`), whatever it drew: draw on a big canvas once per step, with
   everything that changed. A canvas is **1024 px a side at most** (the badge stops the
@@ -187,13 +190,14 @@ LIVE 59% CPU / 135 kpx/s (was ~65% / 171), SCHEDULE 65% / 140 (was ~69% / 179),
 SCHEDULE paused 30% / 15, VALIDATOR 31% / 33 (was ~49%). Then the Bluetooth path was
 removed (the owner's call).
 
-2026-11-16, smoothness pass (1.0.3, not published yet; official 2.2.0): the cards take a
-new leader one a tick, the chart's bars are drawn when it moves and it goes round
-without being drawn whole (was every 13 s, ~45 ms of Lua), the epoch ring redraws only
-the pixels that change (was ~75 ms). On the badge, LIVE: gaps over 65 ms between ticks
-1.22 -> 0.03 a second, 27.2 -> 29.9 ticks/s, Lua's ticks over 20 ms 1.27 -> 0.10 a
-second, no error or watchdog over the three views. Simulator: LIVE 151 -> 131 kpx/s,
-the worst tick 39 -> 21 kpx, the chart pixel for pixel the same but its newest bar.
+2026-11-16/17, smoothness pass (1.0.3, not published yet; official 2.2.0): the chart's
+bars are drawn when it moves and it goes round without being drawn whole (was every
+13 s, ~45 ms of Lua), the epoch ring redraws only the pixels that change (was ~75 ms),
+the cards follow live_s (the fill's clock), the three middle ones move on the new
+leader's tick, the edges a tick later. On the badge, LIVE: gaps over 65 ms between
+ticks 1.24 -> 0.20 a second, worst gap per 5 s 112 -> 66 ms (medians), 27.5 -> 29.1
+ticks/s, no error or watchdog. Simulator: the slot being made outside the current
+card 3.5% of the time (1.0.2) -> 0; LIVE 151 -> 132 kpx/s, the worst tick 39 -> 21 kpx.
 CPU not measured (no `top` on 2.2.0).
 
 The Wi-Fi path needs the badge server's ticket: the store, or a test run from

@@ -464,60 +464,59 @@ local function animated(w, live_s)
 end
 
 -- When the next leader takes over the cards move one place left, without sliding (a
--- fifth of LIVE's screen time, once), one card a tick, and none on the tick the chart
--- moves: all five with the chart froze the screen ~130 ms a leader (NOTES.md).
+-- fifth of LIVE's screen time), on the clock the slots fill by (live_s, not the relay's
+-- est, which can be a slot behind): the three middle ones at once, the edges a tick
+-- later, the chart after them (NOTES.md). Returns true while they move.
+local CARD_ORDER = { 2, 3, 4, 1, 5 }
 local function drawCarousel(now, live_s, f)
-  local cur = est - est % 4
-  local barsDirty = false
-  local room = live_s == chartKey
-  for k = 1, 5 do
+  local cur = live_s - live_s % 4
+  local barsDirty, moved, mid = false, false, false
+  for _, k in ipairs(CARD_ORDER) do
     local card, w = cards[k], winAt(cur + (k - 3) * 4)
     local isCur, ours = k == 3, w.o == 1
     local frame = card.s ~= w.s or card.cur ~= isCur or card.ours ~= ours
-    local wait = false                         -- (card.s nil: the view was hidden, draw them all)
-    if frame and card.s then
-      if room then room = false else wait = true end
+    moved = moved or frame
+    if frame and k >= 2 and k <= 4 then mid = true end
+    if frame and card.s and mid and (k == 1 or k == 5) then goto skip end   -- the edges: next tick
+    local bw = math.floor((CW - 8) * math.min(w.tx, 2400) / 2400)
+    local bar = ours and -(bw + 1) or bw + 1     -- its bar's width, negative if orange
+    if card.bar ~= bar then card.bar, barsDirty = bar, true end
+    if frame then                              -- the frame: when another leader comes here
+      card.s, card.cur, card.ours = w.s, isCur, ours
+      local c = card.cv.o
+      c:rect(0, 0, CW, CH, isCur and TEAL or (ours and OURS or BORDER))
+      c:rect(1, 1, CW - 2, CH - 2, ours and OURS_BG or PANEL)
+      if ours then for i = 0, 5 do c:rect(1 + i * 10, 1, i == 5 and 8 or 10, 2, grad(i / 5)) end end
     end
-    if not wait then
-      local bw = math.floor((CW - 8) * math.min(w.tx, 2400) / 2400)
-      local bar = ours and -(bw + 1) or bw + 1     -- its bar's width, negative if orange
-      if card.bar ~= bar then card.bar, barsDirty = bar, true end
-      if frame then                              -- the frame: when another leader comes here
-        card.s, card.cur, card.ours = w.s, isCur, ours
-        local c = card.cv.o
-        c:rect(0, 0, CW, CH, isCur and TEAL or (ours and OURS or BORDER))
-        c:rect(1, 1, CW - 2, CH - 2, ours and OURS_BG or PANEL)
-        if ours then for i = 0, 5 do c:rect(1 + i * 10, 1, i == 5 and 8 or 10, 2, grad(i / 5)) end end
+    local changed = frame or card.w ~= w or card.ver ~= w.ver
+    if changed then                            -- the name, the tx: labels, set only when they change
+      card.w, card.ver = w, w.ver
+      card.name:text(fit(w.n, 12, CW - 4))
+      card.name:color(ours and OURS_TXT or (isCur and "text" or "dim"))
+      card.tx:text(w.tx > 0 and (big(w.tx) .. " tx") or (k > 3 and "next" or ""))
+      card.tx:color(isCur and "text" or "dim")
+    end
+    -- the four slots, each redrawn only when what it shows changes (a canvas call costs
+    -- ~50 us): the one being made fills up, one made and waiting pulses, every tick
+    if frame then card.keys = nil end
+    if changed or animated(w, live_s) or card.anim then   -- every tick: a cell is 264 pixels
+      card.anim = animated(w, live_s)
+      local c, keys = card.cells.o, card.keys
+      if not keys then
+        keys = { -1, -1, -1, -1 }
+        card.keys = keys
+        c:clear(ours and OURS_BG or PANEL)
       end
-      local changed = frame or card.w ~= w or card.ver ~= w.ver
-      if changed then                            -- the name, the tx: labels, set only when they change
-        card.w, card.ver = w, w.ver
-        card.name:text(fit(w.n, 12, CW - 4))
-        card.name:color(ours and OURS_TXT or (isCur and "text" or "dim"))
-        card.tx:text(w.tx > 0 and (big(w.tx) .. " tx") or (k > 3 and "next" or ""))
-        card.tx:color(isCur and "text" or "dim")
-      end
-      -- the four slots, each redrawn only when what it shows changes (a canvas call costs
-      -- ~50 us): the one being made fills up, one made and waiting pulses, every tick
-      if frame then card.keys = nil end
-      if changed or animated(w, live_s) or card.anim then   -- every tick: a cell is 264 pixels
-        card.anim = animated(w, live_s)
-        local c, keys = card.cells.o, card.keys
-        if not keys then
-          keys = { -1, -1, -1, -1 }
-          card.keys = keys
-          c:clear(ours and OURS_BG or PANEL)
-        end
-        for j = 0, 3 do
-          local st, s = w.d[j + 1][1], w.s + j
-          local key = st >= 2 and st or (s == live_s and 10 + math.floor(22 * f)) or (s < live_s and st == 1 and 100 + now // 30) or 0
-          if keys[j + 1] ~= key then
-            keys[j + 1] = key
-            cell(c, j * 13, 0, 11, 24, st, s, live_s, f, now)
-          end
+      for j = 0, 3 do
+        local st, s = w.d[j + 1][1], w.s + j
+        local key = st >= 2 and st or (s == live_s and 10 + math.floor(22 * f)) or (s < live_s and st == 1 and 100 + now // 30) or 0
+        if keys[j + 1] ~= key then
+          keys[j + 1] = key
+          cell(c, j * 13, 0, 11, 24, st, s, live_s, f, now)
         end
       end
     end
+    ::skip::
   end
   if barsDirty then                            -- 640 pixels, not a card
     local c = txBars.o
@@ -528,6 +527,7 @@ local function drawCarousel(now, live_s, f)
       if math.abs(bar) > 1 then c:rect(x, 0, math.abs(bar) - 1, 2, bar < 0 and OURS or TEAL) end
     end
   end
+  return moved
 end
 
 local function chartCol(s, live_s, scale, fresh, i)   -- one slot's column (fresh: the canvas was just cleared)
@@ -1284,8 +1284,7 @@ function on_tick(ms)
   if sel and now - keyAt > 60000 then schedLive() end   -- a paused schedule lets go after a minute
 
   if view == "live" then
-    drawCarousel(now, live_s, f)
-    drawChart(live_s)
+    if not drawCarousel(now, live_s, f) then drawChart(live_s) end
   elseif view == "schedule" then
     drawSchedule(now, live_s, p)
   else

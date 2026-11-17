@@ -60,13 +60,20 @@ and a small one for its four slots, so a slot filling up redraws 52 x 24 pixels,
 not the card. The cards' transaction bars grow as their slots come: they are one
 see-through 320 x 2 strip over the cards, not five frames redrawn.
 
-When a leader takes over, the five cards take their new leader one a tick, left to
-right, and none on the tick the chart moves. All five at once, with the chart, was one
-tick of ~35 ms of Lua (five names, five counts, twenty cells) and then ~65 ms of
-screen (39,000 pixels): the picture froze 100 to 190 ms about once a second (measured
-on the badge: the gaps between ticks, tools/gaps.lua). A card a tick is ~5 ms and
-4,300 pixels: gaps over 65 ms went from 1.22 to 0.03 a second, ticks from 27.2 to 29.9
-a second (30 is the most there is). Coming back to the view draws all five at once.
+The cards follow the clock the slots fill by (live_s), not the relay's slot (est),
+which can be a slot behind: on est, the next card's first slot sometimes filled before
+the cards moved (3.5% of the time in 1.0.2, simulator).
+
+When a leader takes over, the three middle cards (the old current one, the new one,
+the next) take their new leader on that tick, the two edges on the next, and the chart
+moves after them. All five at once, with the chart, was one tick of ~35 ms of Lua
+(on the badge: cells ~8, frames ~5, labels ~5, the rest ~5 for five cards) and ~65 ms
+of screen (39,000 pixels): the picture froze 100 to 135 ms about once a second
+(tools/gaps.lua). Measured on the badge, gaps over 65 ms a second: 1.24 for 1.0.3's
+first version, 1.16 for all five at once without the chart, 0.20 middle first.
+One card a tick (0.03) was tried and dropped: the slot being made filled in a card
+not framed as current yet, up to 240 ms (12.7% of the time). Coming back to the view
+draws all five at once.
 
 The epoch ring is 600 pixels, one call each (~75 ms): only those that change are drawn.
 
