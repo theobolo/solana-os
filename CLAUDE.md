@@ -7,9 +7,12 @@ dashboard on the badge. The owner writes in French; answer in French.
 ## What exists (all on branch `claude/solana-breakpoint-badge-mod-llhnwp`)
 
 Published in the badge App Store (listed, Tools): 1.0.0 on 2026-11-15, then 1.0.1 (the
-Wi-Fi keepalive), approved by an organiser after the automatic check flagged it. A new
-version goes through `/apps/submit?id=firedancer-gui` ("Edit your app"): load
-`dist/firedancer-gui.zip`, bump `version` in app.json first.
+Wi-Fi keepalive), approved by an organiser after the automatic check flagged it, 1.0.2
+(fewer canvas calls), 1.0.3 on 2026-11-17 (the smoothness pass, below; passed the
+automatic check in under a minute). A new version goes through
+`https://solana.com/breakpoint/badge/apps/submit?id=firedancer-gui` ("Edit your app";
+`badge.solana.com` no longer resolves): "Pick a .zip" with `dist/firedancer-gui.zip`,
+bump `version` in app.json first; the button then says "Publish <version>".
 
 - `apps/firedancer-gui/main.lua`, `app.json`: the badge app "Firedancer GUI" (id
   `firedancer-gui`). Three views (LIVE, SCHEDULE, VALIDATOR), LEDs. Data comes as
@@ -190,7 +193,7 @@ LIVE 59% CPU / 135 kpx/s (was ~65% / 171), SCHEDULE 65% / 140 (was ~69% / 179),
 SCHEDULE paused 30% / 15, VALIDATOR 31% / 33 (was ~49%). Then the Bluetooth path was
 removed (the owner's call).
 
-2026-11-16/17, smoothness pass (1.0.3, not published yet; official 2.2.0): the chart's
+2026-11-16/17, smoothness pass (1.0.3, in the store 2026-11-17; official 2.2.0): the chart's
 bars are drawn when it moves and it goes round without being drawn whole (was every
 13 s, ~45 ms of Lua), the epoch ring redraws only the pixels that change (was ~75 ms),
 the cards follow live_s (the fill's clock), the three middle ones move on the new
